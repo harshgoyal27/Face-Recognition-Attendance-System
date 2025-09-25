@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Attendance Summary{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Attendance Summary</h2>
+  <div class="text-secondary">Count of present days for each student within a date range.</div>
+</div>
+
+<div class="card-surface">
+  <div class="p-3 border-bottom border-secondary border-opacity-25">
+    <form method="GET" class="row g-2 align-items-center">
+      <div class="col-md-3">
+        <label>From Date</label>
+        <input type="date" name="start" class="form-control" value="{{ start or '' }}">
+      </div>
+      <div class="col-md-3">
+        <label>To Date</label>
+        <input type="date" name="end" class="form-control" value="{{ end or '' }}">
+      </div>
+      <div class="col-md-3">
+        <label>Class</label>
+        <select name="class" class="form-select">
+          <option value="">All Classes</option>
+          {% for c in classes %}
+          <option value="{{ c }}" {% if c == class_filter %}selected{% endif %}>
+            {{ c }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3 align-self-end">
+        <button class="btn btn-outline-light w-100">Filter</button>
+      </div>
+    </form>
+  </div>
+  <div class="p-3 d-flex gap-2">
+    <a href="{{ url_for('download_excel') }}" class="btn btn-success"><i class="bi bi-file-earmark-excel"></i> Download Excel</a>
+    <a href="{{ url_for('download_pdf') }}" class="btn btn-danger"><i class="bi bi-file-earmark-pdf"></i> Download PDF</a>
+  </div>
+
+  <div class="table-wrap">
+      <table class="table table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Roll Number</th>
+          <th>Student Name</th>
+          <th>Total Days Present</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for (roll,name), count in counts.items() %}
+        <tr>
+          <td><span class="soft-badge">{{ roll }}</span></td>
+          <td>{{ name }}</td>
+          <td>{{ count }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="3" class="text-center text-secondary py-5">No records found for the selected filters.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

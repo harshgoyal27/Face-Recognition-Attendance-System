@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Assign Classes{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Assign Classes to Teachers</h2>
+  <div class="text-secondary">Grant teachers access to specific classes for attendance.</div>
+</div>
+
+<div class="card-surface">
+  <div class="p-3">
+    <h5>New Assignment</h5>
+    <form method="post" class="row g-3 align-items-end">
+      <input type="hidden" name="assign">
+      <div class="col-md-5">
+        <label for="teacher_id" class="form-label">Teacher</label>
+        <select name="teacher_id" id="teacher_id" class="form-select" required>
+          {% for t in teachers %}
+          <option value="{{ t['id'] }}">{{ t['username'] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-5">
+        <label for="class_name" class="form-label">Class</label>
+        <select name="class_name" id="class_name" class="form-select" required>
+          {% for c in classes %}
+          <option value="{{ c['class_name'] }}">{{ c['class_name'] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-brand w-100">Assign</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Teacher</th>
+          <th>Class</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in assigned %}
+        <tr>
+          <td>{{ row['username'] }}</td>
+          <td>{{ row['class_name'] }}</td>
+          <td>
+            <form method="post" onsubmit="return confirm('Remove this assignment?');">
+              <input type="hidden" name="delete">
+              <input type="hidden" name="assign_id" value="{{ row['id'] }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="3" class="text-center text-secondary py-5">No assignments yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

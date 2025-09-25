@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Dashboard</h2>
+  <div class="text-secondary">Today's attendance overview and records.</div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-3 col-md-6">
+    <div class="card-surface p-3">
+      <h6 class="text-muted">Total Students</h6>
+      <h3 class="mb-0">{{ total_students }}</h3>
+    </div>
+  </div>
+  <div class="col-lg-3 col-md-6">
+    <div class="card-surface p-3">
+      <h6 class="text-muted">Present Today</h6>
+      <h3 class="mb-0 text-success">{{ present_today }}</h3>
+    </div>
+  </div>
+  <div class="col-lg-3 col-md-6">
+    <div class="card-surface p-3">
+      <h6 class="text-muted">Absent Today</h6>
+      <h3 class="mb-0 text-danger">{{ absent_today }}</h3>
+    </div>
+  </div>
+  <div class="col-lg-3 col-md-6">
+    <div class="card-surface p-3">
+      <h6 class="text-muted">Total Classes</h6>
+      <h3 class="mb-0 text-primary">{{ total_classes }}</h3>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-md-6">
+    <div class="card-surface p-3 h-100">
+      <h5 class="text-center mb-3">📊 Attendance Distribution</h5>
+      <div style="height: 300px;" class="d-flex justify-content-center">
+        <canvas id="attendanceChart"></canvas>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card-surface p-3 h-100">
+      <h5 class="text-center mb-3">📊 Attendance per Class</h5>
+      <div style="height: 300px;">
+        <canvas id="classChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card-surface">
+  <div class="p-3 d-flex flex-wrap gap-3 align-items-center justify-content-between">
+    <h5>Attendance Records</h5>
+    <div class="d-flex flex-wrap gap-2">
+      <form class="d-flex gap-2" method="GET" action="/">
+        <input type="date" class="form-control" name="date_filter" value="{{ selected_date or '' }}">
+        <select class="form-select" name="class_filter">
+          <option value="all">All Classes</option>
+          {% for class in classes %}
+          <option value="{{ class }}" {% if class == selected_class %}selected{% endif %}>
+            {{ class }}
+          </option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-outline-primary">Filter</button>
+      </form>
+      <a href="{{ url_for('download', class_filter=selected_class, date_filter=selected_date) }}" class="btn btn-brand">
+        <i class="bi bi-download"></i> Download CSV
+      </a>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Roll</th>
+          <th>Name</th>
+          <th>Class</th>
+          <th>Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for record in records %}
+        <tr>
+          <td><span class="soft-badge">{{ record['roll_number'] }}</span></td>
+          <td>{{ record['name'] }}</td>
+          <td>{{ record['class_name'] }}</td>
+          <td>{{ record['timestamp'] }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" class="text-center text-secondary py-5">No records found.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // Pie Chart
+  new Chart(document.getElementById('attendanceChart'), {
+    type: 'pie',
+    data: {
+      labels: ['Present', 'Absent'],
+      datasets: [{ data: [{{ present_today }}, {{ absent_today }}], backgroundColor: ['#198754', '#dc3545'] }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#333' } } } }
+  });
+
+  // Bar Chart
+  new Chart(document.getElementById('classChart'), {
+    type: 'bar',
+    data: {
+      labels: {{ class_labels|tojson }},
+      datasets: [
+        { label: 'Present', data: {{ present_counts|tojson }}, backgroundColor: '#198754' },
+        { label: 'Absent', data: {{ absent_counts|tojson }}, backgroundColor: '#dc3545' }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#333' } } },
+      scales: {
+        x: { ticks: { color: '#333' }, grid: { color: 'rgba(0,0,0,0.1)' } },
+        y: { ticks: { color: '#333', stepSize: 1 }, beginAtZero: true, grid: { color: 'rgba(0,0,0,0.1)' } }
+      }
+    }
+  });
+</script>
+{% endblock %}

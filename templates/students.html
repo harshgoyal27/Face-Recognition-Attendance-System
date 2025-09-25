@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}Students{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4 d-flex flex-wrap gap-3 align-items-center justify-content-between">
+  <div>
+    <h2 class="mb-1">Students</h2>
+    <div class="text-secondary">Manage roster, branches, and photos.</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{{ url_for('capture_student') }}" class="btn btn-outline-secondary">
+      <i class="bi bi-camera"></i> Capture
+    </a>
+    <button id="openAddBtn" class="btn btn-brand" data-bs-toggle="modal" data-bs-target="#studentModal">
+      <i class="bi bi-person-plus"></i> Add Student
+    </button>
+  </div>
+</div>
+
+<form method="get" action="{{ url_for('students_page') }}" class="mb-3">
+  <div class="input-group">
+    <input type="text" name="q" value="{{ q or '' }}" class="form-control" placeholder="Search by roll, name, or branch">
+    <button class="btn btn-outline-primary" type="submit">
+      <i class="bi bi-search"></i> Search
+    </button>
+    {% if q %}
+    <a class="btn btn-outline-danger" href="{{ url_for('students_page') }}">
+      <i class="bi bi-x-circle"></i> Clear
+    </a>
+    {% endif %}
+  </div>
+</form>
+
+<div class="card-surface">
+  <div class="table-wrap">
+    <table class="table align-middle mb-0 table-striped">
+      <thead>
+        <tr>
+          <th>Student</th>
+          <th>Roll</th>
+          <th>Branch</th>
+          <th style="width:180px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="d-flex align-items-center gap-3">
+            {% if row['image_path'] %}
+              <img src="/{{ row['image_path'] }}" class="rounded" style="width:46px; height:46px; object-fit:cover;" alt="photo">
+            {% else %}
+              <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/user.svg" class="rounded p-2 bg-light" style="width:46px; height:46px;" alt="no photo">
+            {% endif %}
+            <div>
+              <div class="fw-semibold">{{ row['name'] }}</div>
+              <div class="text-secondary small">Photo {% if row['image_path'] %}present{% else %}missing{% endif %}</div>
+            </div>
+          </td>
+          <td><span class="soft-badge">{{ row['roll_number'] }}</span></td>
+          <td>{{ row['branch'] }}</td>
+          <td class="actions">
+            <div class="d-flex gap-2">
+              <button class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#studentModal" data-mode="edit" data-roll="{{ row['roll_number'] }}" data-name="{{ row['name'] }}" data-branch="{{ row['branch'] }}" data-image="{{ row['image_path'] or '' }}">
+                <i class="bi bi-pencil-square"></i> Edit
+              </button>
+              <form method="POST" action="{{ url_for('delete_student', roll_number=row['roll_number']) }}" onsubmit="return confirm('Delete {{ row['name'] }}?');">
+                <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" class="text-center text-secondary py-5">No students found.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal fade" id="studentModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form method="POST" enctype="multipart/form-data" id="studentForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="modalTitle">Add Student</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="mode" id="formMode" value="add">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Roll Number</label>
+              <input type="text" name="roll" class="form-control" id="rollInput" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Name</label>
+              <input type="text" name="name" class="form-control" id="nameInput" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Branch</label>
+              <select name="branch" class="form-select" id="branchSelect" required>
+                  <option value="CSDA">CSDA</option>
+                  <option value="CIOT">CIOT</option>
+                  <option value="ECAM1">ECAM1</option>
+                  <option value="ECAM2">ECAM2</option>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Photo (optional)</label>
+              <label class="w-100 p-3 border rounded text-center" for="studentImage" style="cursor: pointer;">
+                  <img id="imgPreview" src="" alt="Image Preview" style="display:none; width:120px; height:120px; object-fit:cover; border-radius:12px; margin: 0 auto .5rem;">
+                  <div class="text-secondary"><i class="bi bi-upload"></i> Click to choose an image</div>
+              </label>
+              <input id="studentImage" type="file" name="image" accept="image/*" class="form-control d-none">
+              <div class="form-text">Leave empty to keep the existing photo.</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-brand">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Image picker & preview
+  (function(){
+    const input = document.getElementById('studentImage');
+    const preview = document.getElementById('imgPreview');
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      if(!file){ preview.style.display='none'; preview.src=''; return; }
+      const reader = new FileReader();
+      reader.onload = e => { preview.src = e.target.result; preview.style.display='block'; };
+      reader.readAsDataURL(file);
+    });
+  })();
+
+  // Reusable modal: Add vs Edit
+  (function(){
+    const modal = document.getElementById('studentModal');
+    const title = document.getElementById('modalTitle');
+    const modeInput = document.getElementById('formMode');
+    const rollInput = document.getElementById('rollInput');
+    const nameInput = document.getElementById('nameInput');
+    const branchSelect = document.getElementById('branchSelect');
+    const imgInput = document.getElementById('studentImage');
+    const imgPreview = document.getElementById('imgPreview');
+
+    document.getElementById('openAddBtn').addEventListener('click', () => {
+      title.textContent = 'Add Student';
+      modeInput.value = 'add';
+      rollInput.value = '';
+      nameInput.value = '';
+      branchSelect.value = 'CSDA';
+      rollInput.readOnly = false;
+      imgInput.value = '';
+      imgPreview.style.display = 'none';
+      imgPreview.src = '';
+    });
+
+    modal.addEventListener('show.bs.modal', function (event) {
+      const trigger = event.relatedTarget;
+      if (!trigger || trigger.getAttribute('data-mode') !== 'edit') return;
+
+      title.textContent = 'Edit Student';
+      modeInput.value = 'edit';
+      rollInput.value = trigger.getAttribute('data-roll') || '';
+      nameInput.value = trigger.getAttribute('data-name') || '';
+      branchSelect.value = trigger.getAttribute('data-branch') || 'CSDA';
+      rollInput.readOnly = true;
+      imgInput.value = '';
+      const image = trigger.getAttribute('data-image') || '';
+      if (image) {
+        imgPreview.src = '/' + image;
+        imgPreview.style.display = 'block';
+      } else {
+        imgPreview.style.display = 'none';
+        imgPreview.src = '';
+      }
+    });
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Classes{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Manage Classes</h2>
+  <div class="text-secondary">Add or remove classes from the system.</div>
+</div>
+
+<div class="card-surface">
+  <div class="p-3">
+    <h5>Add New Class</h5>
+    <form method="POST" class="d-flex gap-2">
+      <input type="text" name="class_name" class="form-control" placeholder="Enter class or subject name" required>
+      <button class="btn btn-brand">Add Class</button>
+    </form>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Class Name</th>
+          <th style="width: 120px;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in classes %}
+        <tr>
+          <td>{{ c['class_name'] }}</td>
+          <td>
+            <form method="POST" action="{{ url_for('delete_class', cid=c['id']) }}" onsubmit="return confirm('Delete this class?');">
+              <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="2" class="text-center text-secondary py-5">No classes have been added yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

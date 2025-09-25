@@ -1,0 +1,19 @@
+# Python virtual environment
+venv/
+env/
+*.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database file
+*.db
+*.sqlite3
+
+# DeepFace model cache (macOS/Linux)
+.deepface/
+models/
+
+# OS-specific files
+.DS_Store
