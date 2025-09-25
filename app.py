@@ -10,7 +10,9 @@ from collections import defaultdict
 
 import cv2
 import numpy as np
+import psycopg2
 from deepface import DeepFace
+from psycopg2.extras import DictCursor
 
 from flask import (
     Flask, render_template, Response,
@@ -48,8 +50,16 @@ DB_PATH = "attendance.db"
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        # You are in production on Render, connect to PostgreSQL
+        conn = psycopg2.connect(database_url)
+        # Use DictCursor to make rows behave like dictionaries, similar to sqlite3.Row
+        conn.cursor_factory = DictCursor
+    else:
+        # You are in local development, connect to SQLite
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
     return conn
     
 def get_user_classes(user_id, role):
