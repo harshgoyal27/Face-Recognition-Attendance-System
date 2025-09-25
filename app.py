@@ -275,7 +275,7 @@ def mark_attendance(roll, name, class_name):  # <-- now accepts name
 # ---------- Webcam ----------
 recent_marked = {}
 
-
+'''
 def gen_frames(class_name="General"):
     cap = cv2.VideoCapture(0)  # CAP_AVFOUNDATION is Mac-only; default works cross-platform
     if not cap.isOpened():
@@ -302,7 +302,7 @@ def gen_frames(class_name="General"):
             yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
     finally:
         cap.release()
-
+'''
 
 # ---------- Routes ----------
 @app.route("/login", methods=["GET", "POST"])
@@ -403,6 +403,8 @@ def index():
                            class_labels=[c for c in allowed_classes],
                            present_counts=[],
                            absent_counts=[])
+                           
+                           
 
 @app.route("/students", methods=["GET", "POST"])
 @login_required
@@ -448,6 +450,33 @@ def students_page():
         # build_student_embeddings()
         flash("Student saved", "success")
         return redirect(url_for("students_page"))
+        
+# Add this new route to app.py
+# You can DELETE the old video_feed and gen_frames functions
+
+@app.route('/recognize', methods=['POST'])
+@login_required
+def recognize():
+    data = request.get_json()
+    class_name = data.get('class_name', 'General')
+    image_data = data['image_data'].split(',')[1] # Remove the "data:image/jpeg;base64," part
+
+    # Decode the image and convert to a format OpenCV can use
+    img_bytes = base64.b64decode(image_data)
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # Recognize the face
+    roll, name, score = recognize_face(frame)
+
+    if roll and not already_marked_today(roll, class_name):
+        mark_attendance(roll, name, class_name)
+        return {"status": "success", "name": name, "roll": roll}
+    
+    elif roll:
+        return {"status": "already_marked", "name": name}
+
+    return {"status": "not_recognized"}
 
     # --- GET: search includes branch now ---
     q = (request.args.get("q") or "").strip()
@@ -674,12 +703,12 @@ def camera_page():
                            now=date.today().isoformat(), classes=classes)
 
 
-@app.route("/video_feed")
+'''@app.route("/video_feed")
 @login_required
 def video_feed():
     return Response(gen_frames(class_name=request.args.get("class_name", "General")),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
-
+'''
 
 @app.route("/reset_attendance", methods=["POST"])
 @login_required
@@ -954,3 +983,16 @@ def rebuild_embeddings():
     app.run(host="0.0.0.0", port=5001, debug=True)
 '''
 
+@app.route('/fix-students-table-branch-column')
+def fix_students_table():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # This command adds the 'branch' column if it doesn't already exist
+        cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS branch TEXT;")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return "<h1>'branch' column added to students table successfully!</h1><p>Please remember to remove this route from app.py now.</p>"
+    except Exception as e:
+        return f"An error occurred: {e}"
