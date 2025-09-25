@@ -294,7 +294,7 @@ def login():
         u, p = request.form["username"], request.form["password"]
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id,username,password_hash,role FROM users WHERE username=?", (u,))
+        cur.execute("SELECT id,username,password_hash,role FROM users WHERE username= %s;", (u,))
         row = cur.fetchone()
         conn.close()
         if row and check_password_hash(row["password_hash"], p):
