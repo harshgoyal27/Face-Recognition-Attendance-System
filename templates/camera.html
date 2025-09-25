@@ -5,45 +5,127 @@
 {% block content %}
 <div class="page-header mb-4">
   <h2 class="mb-1">Camera Attendance</h2>
-  <div class="text-secondary">Select a class and point the camera at students to mark attendance.</div>
+  <div class="text-secondary">The camera below uses your browser. Attendance will be marked automatically.</div>
 </div>
 
 <div class="row g-4">
   <div class="col-md-8">
-    <div class="card-surface p-2">
-      <img src="{{ url_for('video_feed', class_name=class_name) }}" alt="Camera Feed" class="img-fluid rounded-3">
+    <div class="card-surface p-2 mb-3">
+      <video id="video" autoplay playsinline class="img-fluid rounded-3"></video>
+      <canvas id="canvas" style="display:none;"></canvas>
+    </div>
+    <div class="d-flex gap-2">
+        <select id="classNameSelect" class="form-select w-auto">
+          {% for c in classes %}
+            <option value="{{ c['class_name'] }}" {% if c['class_name'] == class_name %}selected{% endif %}>
+              {{ c['class_name'] }}
+            </option>
+          {% endfor %}
+        </select>
+        <button id="startBtn" class="btn btn-brand">Start Recognition</button>
+        <button id="stopBtn" class="btn btn-outline-danger" style="display:none;">Stop Recognition</button>
     </div>
   </div>
 
   <div class="col-md-4">
-    <div class="card-surface p-3 mb-3">
-      <h5><i class="bi bi-gear"></i> Controls</h5>
-      <form method="GET" action="{{ url_for('camera_page') }}" class="d-flex gap-2">
-        <select name="class_name" class="form-select">
-          {% for c in classes %}
-          <option value="{{ c['class_name'] }}" {% if c['class_name'] == class_name %}selected{% endif %}>
-            {{ c['class_name'] }}
-          </option>
-          {% endfor %}
-        </select>
-        <button class="btn btn-brand">Set</button>
-      </form>
-    </div>
-
     <div class="card-surface p-3">
-      <h5><i class="bi bi-arrow-clockwise"></i> Reset Attendance</h5>
-      <p class="text-secondary small">
-        If needed, you can clear all attendance records for the selected class and date.
-      </p>
-      <form method="POST" action="{{ url_for('reset_attendance') }}" onsubmit="return confirm('Are you sure you want to reset attendance for this day?');">
-        <input type="hidden" name="class_name" value="{{ class_name }}">
-        <div class="mb-2">
-          <label class="form-label">Date to Reset</label>
-          <input type="date" class="form-control" name="date" value="{{ now }}">
+        <h5><i class="bi bi-info-circle"></i> Status</h5>
+        <div id="status" class="alert alert-secondary">
+            Awaiting start...
         </div>
-        <button class="btn btn-outline-danger w-100">Reset Now</button>
-      </form>
+        <h6>Last Marked:</h6>
+        <div id="lastMarked">None yet.</div>
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusDiv = document.getElementById('status');
+    const lastMarkedDiv = document.getElementById('lastMarked');
+    const classNameSelect = document.getElementById('classNameSelect');
+
+    let recognitionInterval = null;
+
+    // Access webcam
+    async function initWebcam() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+        } catch (err) {
+            statusDiv.className = 'alert alert-danger';
+            statusDiv.textContent = 'Error: Could not access webcam. Please grant permission and refresh.';
+            console.error("Error accessing webcam: ", err);
+        }
+    }
+
+    async function recognizeFace() {
+        if (video.readyState < 2) return; // Wait for video to be ready
+
+        statusDiv.className = 'alert alert-info';
+        statusDiv.textContent = 'Scanning...';
+
+        const context = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const imageData = canvas.toDataURL('image/jpeg', 0.8);
+        const className = classNameSelect.value;
+        
+        try {
+            const response = await fetch('/recognize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_data: imageData, class_name: className })
+            });
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                statusDiv.className = 'alert alert-success';
+                statusDiv.textContent = `Success! Marked ${result.name} present.`;
+                lastMarkedDiv.innerHTML = `${result.name} (${result.roll}) <br>` + lastMarkedDiv.innerHTML;
+            } else if (result.status === 'already_marked') {
+                statusDiv.className = 'alert alert-warning';
+                statusDiv.textContent = `${result.name} is already marked for today.`;
+            } else {
+                statusDiv.className = 'alert alert-secondary';
+                statusDiv.textContent = 'No recognized student found.';
+            }
+        } catch (error) {
+            console.error('Error during recognition:', error);
+            statusDiv.className = 'alert alert-danger';
+            statusDiv.textContent = 'Error connecting to server.';
+        }
+    }
+
+    startBtn.addEventListener('click', () => {
+        if (!recognitionInterval) {
+            // Start recognition every 3 seconds (3000 milliseconds)
+            recognitionInterval = setInterval(recognizeFace, 3000);
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'block';
+            statusDiv.textContent = 'Recognition started...';
+        }
+    });
+
+    stopBtn.addEventListener('click', () => {
+        if (recognitionInterval) {
+            clearInterval(recognitionInterval);
+            recognitionInterval = null;
+            startBtn.style.display = 'block';
+            stopBtn.style.display = 'none';
+            statusDiv.className = 'alert alert-secondary';
+            statusDiv.textContent = 'Recognition stopped.';
+        }
+    });
+
+    // Initialize the webcam on page load
+    initWebcam();
+</script>
 {% endblock %}

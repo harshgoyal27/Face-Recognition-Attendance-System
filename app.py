@@ -983,16 +983,4 @@ def rebuild_embeddings():
     app.run(host="0.0.0.0", port=5001, debug=True)
 '''
 
-@app.route('/fix-students-table-branch-column')
-def fix_students_table():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        # This command adds the 'branch' column if it doesn't already exist
-        cur.execute("ALTER TABLE students ADD COLUMN IF NOT EXISTS branch TEXT;")
-        conn.commit()
-        cur.close()
-        conn.close()
-        return "<h1>'branch' column added to students table successfully!</h1><p>Please remember to remove this route from app.py now.</p>"
-    except Exception as e:
-        return f"An error occurred: {e}"
+
