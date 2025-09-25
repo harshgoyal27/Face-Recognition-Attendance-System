@@ -923,7 +923,4 @@ def fix_students_table():
         return "<h1>'branch' column fix applied! You can remove this route now.</h1>"
     except Exception as e:
         return f"An error occurred: {str(e)}"
-# --- Main Execution ---
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
-```
+
