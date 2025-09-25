@@ -62,6 +62,23 @@ def get_db_connection():
         conn.row_factory = sqlite3.Row
     return conn
     
+def get_user_classes(user_id, role):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if role == "admin":
+        # This query is fine as it has no parameters
+        cur.execute("SELECT class_name FROM classes ORDER BY class_name;")
+        rows = cur.fetchall()
+    else:
+        # This query needs the %s placeholder for PostgreSQL
+        cur.execute("""
+            SELECT class_name FROM teacher_classes
+            WHERE teacher_id = %s ORDER BY class_name;
+        """, (user_id,))
+        rows = cur.fetchall()
+    conn.close()
+    return rows
+
 from werkzeug.security import generate_password_hash
 # Make sure your get_db_connection() is defined to connect to PostgreSQL
 # import psycopg2
