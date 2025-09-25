@@ -62,78 +62,83 @@ def get_db_connection():
         conn.row_factory = sqlite3.Row
     return conn
     
-def get_user_classes(user_id, role):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if role == "admin":
-        rows = cur.execute("SELECT class_name FROM classes ORDER BY class_name").fetchall()
-    else:
-        rows = cur.execute("""
-            SELECT class_name FROM teacher_classes
-            WHERE teacher_id=? ORDER BY class_name
-        """, (user_id,)).fetchall()
-    conn.close()
-    return rows
-
+from werkzeug.security import generate_password_hash
+# Make sure your get_db_connection() is defined to connect to PostgreSQL
+# import psycopg2
+# from psycopg2.extras import DictCursor
 
 def setup_database():
-    conn = get_db_connection()
+    """
+    Initializes the PostgreSQL database by creating tables and a default admin user.
+    """
+    conn = get_db_connection() # This should return a psycopg2 connection
     cur = conn.cursor()
 
-    # users table
-    cur.execute("""CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    # --- Create tables with PostgreSQL syntax ---
+
+    # users table: Changed to SERIAL PRIMARY KEY
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'teacher')""")
+        role TEXT NOT NULL DEFAULT 'teacher'
+    );""")
 
     # classes table
-    cur.execute("""CREATE TABLE IF NOT EXISTS classes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        class_name TEXT UNIQUE NOT NULL)""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS classes (
+        id SERIAL PRIMARY KEY,
+        class_name TEXT UNIQUE NOT NULL
+    );""")
 
     # students table
-    # NOTE: give class_name a sensible default; original code inserted students without it.
-    cur.execute("""CREATE TABLE IF NOT EXISTS students (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id SERIAL PRIMARY KEY,
         roll_number TEXT NOT NULL,
         name TEXT NOT NULL,
         class_name TEXT NOT NULL DEFAULT 'General',
-        image_path TEXT)""")
+        image_path TEXT
+    );""")
 
-    # attendance table
-    # NOTE: keep 'name' since other parts of app show it; ensure inserts include it.
-    cur.execute("""CREATE TABLE IF NOT EXISTS attendance (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    # attendance table: Changed to TIMESTAMP WITH TIME ZONE
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS attendance (
+        id SERIAL PRIMARY KEY,
         student_roll_number TEXT NOT NULL,
         name TEXT NOT NULL,
         class_name TEXT NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)""")
-        
-    cur.execute("""CREATE TABLE IF NOT EXISTS teacher_classes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );""")
+    
+    # teacher_classes table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_classes (
+        id SERIAL PRIMARY KEY,
         teacher_id INTEGER NOT NULL,
         class_name TEXT NOT NULL,
-        FOREIGN KEY (teacher_id) REFERENCES users(id))""")
+        FOREIGN KEY (teacher_id) REFERENCES users(id)
+    );""")
 
-    # ensure default admin user exists
-    cur.execute("SELECT id, username, role FROM users WHERE username=?", ("admin",))
+    # --- Ensure default admin user exists, using %s placeholders ---
+    
+    cur.execute("SELECT id, username, role FROM users WHERE username = %s;", ("admin",))
     row = cur.fetchone()
 
     if not row:
         cur.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s);",
             ("admin", generate_password_hash("admin123"), "admin")
         )
         print("[INFO] Default admin created → username: admin | password: admin123 | role: admin")
     else:
         if row["role"] != "admin":
-            cur.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
+            cur.execute("UPDATE users SET role = 'admin' WHERE username = %s;", ("admin",))
             print("[INFO] Admin role corrected for user 'admin'")
 
     conn.commit()
     conn.close()
-
 # ---------- Flask-Login User ----------
 class User(UserMixin):
     def __init__(self, user_id, username, password_hash, role):
