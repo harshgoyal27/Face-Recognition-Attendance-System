@@ -333,50 +333,67 @@ def logout():
 @login_required
 def index():
     conn = get_db_connection()
+    cur = conn.cursor() # <-- Create a cursor here
+
     selected_class = request.args.get("class_filter")
     selected_date = request.args.get("date_filter") or date.today().isoformat()
 
     # Build attendance query
-    q = """SELECT s.roll_number,s.name,a.class_name,a.timestamp
-           FROM attendance a JOIN students s ON a.student_roll_number=s.roll_number"""
+    q = "SELECT s.roll_number, s.name, a.class_name, a.timestamp FROM attendance a JOIN students s ON a.student_roll_number = s.roll_number"
     cond, params = [], []
 
-    # 🔹 teachers restricted to their classes
-    allowed_classes = [c["class_name"] for c in get_user_classes(current_user.id, current_user.role)]
+    # Teachers restricted to their classes
+    allowed_classes_rows = get_user_classes(current_user.id, current_user.role)
+    allowed_classes = [c["class_name"] for c in allowed_classes_rows]
+    
     if current_user.role == "teacher":
-        cond.append("a.class_name IN ({})".format(",".join(["?"] * len(allowed_classes))))
-        params.extend(allowed_classes)
+        if not allowed_classes:
+            # If a teacher has no classes, show no data
+            cond.append("1=0")
+        else:
+            placeholders = ','.join(['%s'] * len(allowed_classes))
+            cond.append(f"a.class_name IN ({placeholders})")
+            params.extend(allowed_classes)
 
     if selected_class and selected_class != "all":
-        cond.append("a.class_name=?")
+        cond.append("a.class_name = %s")
         params.append(selected_class)
     if selected_date:
-        cond.append("DATE(a.timestamp)=?")
+        cond.append("DATE(a.timestamp) = %s")
         params.append(selected_date)
     if cond:
         q += " WHERE " + " AND ".join(cond)
-    q += " ORDER BY a.timestamp DESC"
-    records = conn.execute(q, params).fetchall()
+    q += " ORDER BY a.timestamp DESC;"
 
-    # Stats (respect teacher’s allowed classes)
-    total_students = conn.execute(
-        "SELECT COUNT(*) FROM students WHERE class_name IN ({})".format(",".join(["?"]*len(allowed_classes))),
-        allowed_classes
-    ).fetchone()[0] if allowed_classes else 0
+    # Use the cursor to execute
+    cur.execute(q, params)
+    records = cur.fetchall()
 
-    present_today = conn.execute(
-        "SELECT COUNT(DISTINCT student_roll_number) FROM attendance WHERE DATE(timestamp)=? AND class_name IN ({})"
-        .format(",".join(["?"]*len(allowed_classes))),
-        [selected_date] + allowed_classes
-    ).fetchone()[0] if allowed_classes else 0
+    # --- Use the cursor for all stat queries as well ---
+    
+    # Total Students
+    total_students = 0
+    if allowed_classes:
+        q_students = f"SELECT COUNT(*) FROM students WHERE class_name IN ({','.join(['%s']*len(allowed_classes))});"
+        cur.execute(q_students, allowed_classes)
+        total_students = cur.fetchone()[0]
 
-    absent_today = total_students - present_today if total_students else 0
+    # Present Today
+    present_today = 0
+    if allowed_classes:
+        q_present = f"SELECT COUNT(DISTINCT student_roll_number) FROM attendance WHERE DATE(timestamp) = %s AND class_name IN ({','.join(['%s']*len(allowed_classes))});"
+        cur.execute(q_present, [selected_date] + allowed_classes)
+        present_today = cur.fetchone()[0]
 
+    absent_today = total_students - present_today if total_students > 0 else 0
+
+    # Close the cursor and connection
+    cur.close()
     conn.close()
 
     return render_template("index.html",
                            records=records,
-                           classes=allowed_classes,  # dropdown
+                           classes=allowed_classes,
                            selected_class=selected_class,
                            selected_date=selected_date,
                            total_students=total_students,
@@ -384,7 +401,7 @@ def index():
                            present_today=present_today,
                            absent_today=absent_today,
                            class_labels=[c for c in allowed_classes],
-                           present_counts=[],  # you can re-add per-class stats
+                           present_counts=[],
                            absent_counts=[])
 
 @app.route("/students", methods=["GET", "POST"])
