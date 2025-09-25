@@ -152,7 +152,7 @@ class User(UserMixin):
 def load_user(user_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, username, password_hash, role FROM users WHERE id = ?", (user_id,))
+    cur.execute("SELECT id, username, password_hash, role FROM users WHERE id = %s;", (user_id,))
     row = cur.fetchone()
     conn.close()
     if row:
