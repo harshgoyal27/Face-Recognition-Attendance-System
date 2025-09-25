@@ -470,7 +470,10 @@ def admin_panel():
         return redirect(url_for("index"))
 
     conn = get_db_connection()
-    users = conn.execute("SELECT id, username, role FROM users").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, role FROM users ORDER BY username;")
+    users = cur.fetchall()
+    cur.close()
     conn.close()
     return render_template("admin.html", users=users)
     
@@ -558,7 +561,7 @@ def capture_student():
 
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM students WHERE roll_number=?", (roll,))
+        cur.execute("SELECT 1 FROM students WHERE roll_number = %s;", (roll,))
         if cur.fetchone():
             cur.execute("""UPDATE students
                            SET name=?, class_name=?, image_path=?
@@ -692,74 +695,75 @@ def summary():
     start = request.args.get("start")
     end = request.args.get("end")
     class_filter = request.args.get("class")
-
     conn = get_db_connection()
     cur = conn.cursor()
-
-    q = """SELECT s.roll_number, s.name, a.class_name, DATE(a.timestamp) as day
-           FROM attendance a JOIN students s ON s.roll_number = a.student_roll_number"""
+    q = "SELECT s.roll_number, s.name, a.class_name, DATE(a.timestamp) as day FROM attendance a JOIN students s ON s.roll_number = a.student_roll_number"
     cond, params = [], []
-
     allowed_classes = [c["class_name"] for c in get_user_classes(current_user.id, current_user.role)]
-    if current_user.role == "teacher":
-        cond.append("a.class_name IN ({})".format(",".join(["?"]*len(allowed_classes))))
+    if current_user.role == "teacher" and allowed_classes:
+        # Correct placeholder for a list of items in PostgreSQL
+        placeholders = ','.join(['%s'] * len(allowed_classes))
+        cond.append(f"a.class_name IN ({placeholders})")
         params.extend(allowed_classes)
-
     if class_filter:
-        cond.append("a.class_name=?")
+        cond.append("a.class_name = %s")
         params.append(class_filter)
     if start:
-        cond.append("DATE(a.timestamp)>=?")
+        cond.append("DATE(a.timestamp) >= %s")
         params.append(start)
     if end:
-        cond.append("DATE(a.timestamp)<=?")
+        cond.append("DATE(a.timestamp) <= %s")
         params.append(end)
     if cond:
         q += " WHERE " + " AND ".join(cond)
-
-    rows = cur.execute(q, params).fetchall()
-    classes = allowed_classes  # dropdown for teacher or all for admin
+    cur.execute(q, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-
+    # ... (rest of the function to calculate counts) ...
     counts = defaultdict(int)
     days_map = defaultdict(set)
     for r in rows:
         days_map[(r["roll_number"], r["name"])].add(r["day"])
     for k, v in days_map.items():
         counts[k] = len(v)
-
     return render_template("summary.html", counts=counts, start=start, end=end,
-                           classes=classes, class_filter=class_filter)
+                           classes=allowed_classes, class_filter=class_filter)
 
 # --------- Monthly summary helpers & routes (fixed indentation) ---------
 def _query_monthly_summary(start_m: str | None, end_m: str | None, class_filter: str | None):
-    """
-    Returns list of dicts: {'month': 'YYYY-MM', 'class_name': '…', 'presents': int}
-    """
     conn = get_db_connection()
     cur = conn.cursor()
-
-    sql = """
-      SELECT a.class_name,
-             strftime('%Y-%m', a.timestamp) AS month,
+    is_postgres = hasattr(conn, 'cursor_factory')
+    
+    # Use TO_CHAR for PostgreSQL and strftime for SQLite
+    month_format_sql = "TO_CHAR(a.timestamp, 'YYYY-MM')" if is_postgres else "strftime('%Y-%m', a.timestamp)"
+    
+    sql = f"""
+      SELECT a.class_name, {month_format_sql} AS month,
              COUNT(DISTINCT a.student_roll_number) AS presents
       FROM attendance a
     """
     cond, params = [], []
     if class_filter:
-        cond.append("a.class_name = ?")
+        cond.append("a.class_name = %s")
         params.append(class_filter)
     if start_m:
-        cond.append("strftime('%Y-%m', a.timestamp) >= ?")
+        cond.append(f"{month_format_sql} >= %s")
         params.append(start_m)
     if end_m:
-        cond.append("strftime('%Y-%m', a.timestamp) <= ?")
+        cond.append(f"{month_format_sql} <= %s")
         params.append(end_m)
     if cond:
         sql += " WHERE " + " AND ".join(cond)
-    sql += " GROUP BY a.class_name, strftime('%Y-%m', a.timestamp) ORDER BY month DESC, a.class_name ASC"
+    sql += f" GROUP BY a.class_name, {month_format_sql} ORDER BY month DESC, a.class_name ASC"
+    
+    if not is_postgres:
+        sql = sql.replace('%s', '?')
 
-    rows = cur.execute(sql, params).fetchall()
+    cur.execute(sql, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return [{"class_name": r["class_name"], "month": r["month"], "presents": r["presents"]} for r in rows]
 
