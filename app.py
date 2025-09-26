@@ -777,8 +777,5 @@ def rebuild_embeddings():
 # ---------- Main ----------
 if __name__ == "__main__":
     setup_database()
-    build_student_embeddings()
-    if not student_embeddings:
-        print("[INFO] No embeddings yet. Upload student images and call /rebuild_embeddings after.")
-    port = int(os.getenv("PORT", "5001"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # Don’t build embeddings at boot on Render; call /rebuild_embeddings after deploy
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT","5001")), debug=True)
