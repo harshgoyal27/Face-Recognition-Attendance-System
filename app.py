@@ -1,4 +1,3 @@
-
 import os
 import io
 import sys
@@ -42,6 +41,14 @@ try:
 except Exception:
     canvas = None
     A4 = None
+
+# ---------- DeepFace configuration (cloud-safe) ----------
+# Use ArcFace (ONNX) to avoid TensorFlow/Keras segfaults on Render.
+MODEL_NAME = os.getenv("DF_MODEL", "ArcFace")
+# Robust CPU detector; works with deepface + opencv-headless
+DETECTOR_BACKEND = os.getenv("DF_DETECTOR", "retinaface")
+# Allow requests with no/partial face to avoid hard errors
+ENFORCE_DETECTION = os.getenv("DF_ENFORCE_DET", "false").lower() == "true"
 
 # ---------- Database backend (PostgreSQL if DATABASE_URL is set, else SQLite) ----------
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -193,10 +200,23 @@ student_embeddings: Dict[str, Any] = {}
 def embedding_available() -> bool:
     return DeepFace is not None
 
+def _represent(img_path: str):
+    """
+    Wrapper around DeepFace.represent with Render-safe defaults.
+    """
+    if DeepFace is None:
+        raise RuntimeError("DeepFace not available")
+    return DeepFace.represent(
+        img_path=img_path,
+        model_name=MODEL_NAME,
+        detector_backend=DETECTOR_BACKEND,
+        enforce_detection=ENFORCE_DETECTION
+    )
+
 def build_student_embeddings():
     student_embeddings.clear()
     if not embedding_available():
-        print("[INFO] DeepFace not available; skipping embeddings.")
+        print("[INFO] DeepFace not available; skipping embeddings.", file=sys.stderr)
         return
     conn = get_conn()
     try:
@@ -205,7 +225,7 @@ def build_student_embeddings():
             roll, img = r[0], r[1]
             if img and os.path.exists(img):
                 try:
-                    rep = DeepFace.represent(img_path=img, model_name="Facenet")
+                    rep = _represent(img_path=img)
                     vec = rep[0]["embedding"] if isinstance(rep, list) and isinstance(rep[0], dict) else rep
                     if vec is not None:
                         student_embeddings[roll] = vec
@@ -234,7 +254,7 @@ def recognize_vector(vec, threshold: float = 0.35):
         return None, 0.0
     return (best_roll, best_score if best_score >= (1 - threshold) else None)
 
-# ---------- UI ----------
+# ---------- Minimal UI ----------
 INDEX_HTML = """
 <!doctype html>
 <title>Attendance System</title>
@@ -353,7 +373,7 @@ def logout():
     logout_user()
     return redirect(url_for("login"))
 
-# ---------- Students CRUD (same as before) ----------
+# ---------- Students CRUD ----------
 @app.route("/students", methods=["GET"])
 @login_required
 def list_students():
@@ -439,7 +459,7 @@ def upload_student_image(roll):
         conn.close()
     if embedding_available():
         try:
-            rep = DeepFace.represent(img_path=out_path, model_name="Facenet")
+            rep = _represent(img_path=out_path)
             vec = rep[0]["embedding"] if isinstance(rep, list) and isinstance(rep[0], dict) else rep
             if vec is not None:
                 student_embeddings[roll] = vec
@@ -676,7 +696,7 @@ def recognize():
         image_path = temp_file
 
     try:
-        rep = DeepFace.represent(img_path=image_path, model_name="Facenet")
+        rep = _represent(img_path=image_path)
         vec = rep[0]["embedding"] if isinstance(rep, list) and isinstance(rep[0], dict) else rep
         if not vec:
             return jsonify(match=None)
@@ -777,5 +797,5 @@ def rebuild_embeddings():
 # ---------- Main ----------
 if __name__ == "__main__":
     setup_database()
-    # Don’t build embeddings at boot on Render; call /rebuild_embeddings after deploy
+    # Do NOT build embeddings at boot on Render; use /rebuild_embeddings after deploy.
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","5001")), debug=True)
