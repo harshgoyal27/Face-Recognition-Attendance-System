@@ -16,7 +16,7 @@ from psycopg2.extras import DictCursor
 
 from flask import (
     Flask, render_template, Response,
-    request, redirect, url_for, flash, send_file
+    request, redirect, url_for, flash, send_file, jsonify
 )
 from flask_login import (
     LoginManager, login_user, logout_user, login_required, UserMixin, current_user
@@ -476,7 +476,7 @@ def recognize():
 def delete_student(roll_number):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM students WHERE roll_number=?", (roll_number,))
+    cur.execute("DELETE FROM students WHERE roll_number= %s;", (roll_number,))
     conn.commit()
     conn.close()
     build_student_embeddings()
@@ -559,7 +559,7 @@ def delete_user(user_id):
         return redirect(url_for("index"))
 
     conn = get_db_connection()
-    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.execute("DELETE FROM users WHERE id= %s;", (user_id,))
     conn.commit()
     conn.close()
     flash("User deleted", "success")
@@ -617,7 +617,7 @@ def classes_page():
 def delete_class(cid):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM classes WHERE id=?", (cid,))
+    cur.execute("DELETE FROM classes WHERE id= %s;", (cid,))
     conn.commit()
     conn.close()
     flash("Class deleted", "success")
@@ -653,7 +653,7 @@ def reset_attendance():
         cur.execute("DELETE FROM attendance WHERE class_name = ? AND DATE(timestamp) = ?",
                     (class_name, date_filter))
     else:
-        cur.execute("DELETE FROM attendance WHERE class_name = ?", (class_name,))
+        cur.execute("DELETE FROM attendance WHERE class_name = %s;", (class_name,))
     conn.commit()
     conn.close()
 
