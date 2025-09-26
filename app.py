@@ -1,371 +1,345 @@
 import os
 import io
-import sys
 import csv
-import json
-import base64
-import math
 import time
-import uuid
-import hashlib
-import datetime as dt
-from typing import List, Tuple, Optional, Dict, Any
+import sqlite3
+import tempfile
+import base64
+from datetime import datetime, date
+from collections import defaultdict
+
+import cv2
+import numpy as np
+import psycopg2
+from deepface import DeepFace
+from psycopg2.extras import DictCursor
 
 from flask import (
-    Flask, request, jsonify, redirect, url_for, Response,
-    send_file, render_template_string
+    Flask, render_template, Response,
+    request, redirect, url_for, flash, send_file
 )
 from flask_login import (
-    LoginManager, login_user, login_required, logout_user, UserMixin, current_user
+    LoginManager, login_user, logout_user, login_required, UserMixin, current_user
 )
+from werkzeug.security import generate_password_hash, check_password_hash
 
-# ---------- Optional dependencies ----------
+# Optional deps
 try:
-    import cv2  # type: ignore
+    import pandas as pd
 except Exception:
-    cv2 = None
-
+    pd = None
 try:
-    from deepface import DeepFace  # type: ignore
-except Exception:
-    DeepFace = None
-
-try:
-    import openpyxl  # type: ignore
-except Exception:
-    openpyxl = None
-
-try:
-    from reportlab.pdfgen import canvas  # type: ignore
-    from reportlab.lib.pagesizes import A4  # type: ignore
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
 except Exception:
     canvas = None
-    A4 = None
 
-# ---------- DeepFace configuration (cloud-safe) ----------
-# Use ArcFace (ONNX) to avoid TensorFlow/Keras segfaults on Render.
-MODEL_NAME = os.getenv("DF_MODEL", "ArcFace")
-# Robust CPU detector; works with deepface + opencv-headless
-DETECTOR_BACKEND = os.getenv("DF_DETECTOR", "retinaface")
-# Allow requests with no/partial face to avoid hard errors
-ENFORCE_DETECTION = os.getenv("DF_ENFORCE_DET", "false").lower() == "true"
-
-# ---------- Database backend (PostgreSQL if DATABASE_URL is set, else SQLite) ----------
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-
-if DATABASE_URL:
-    import psycopg2
-    from psycopg2.extras import DictCursor
-    _DB_IS_POSTGRES = True
-else:
-    import sqlite3
-    _DB_IS_POSTGRES = False
-
-def get_conn():
-    if _DB_IS_POSTGRES:
-        return psycopg2.connect(DATABASE_URL)
-    else:
-        return sqlite3.connect("attendance.db", detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
-
-def exec_sql(conn, q: str, params: Tuple = (), dict_rows: bool = False):
-    if _DB_IS_POSTGRES:
-        cur = conn.cursor(cursor_factory=DictCursor) if dict_rows else conn.cursor()
-        cur.execute(q, params)
-        try:
-            rows = cur.fetchall()
-        except Exception:
-            rows = []
-        return rows, cur
-    else:
-        conn.row_factory = sqlite3.Row if dict_rows else None
-        cur = conn.cursor()
-        cur.execute(q, params)
-        try:
-            rows = cur.fetchall()
-        except Exception:
-            rows = []
-        return rows, cur
-
-def qmarks(n: int) -> str:
-    return ",".join(["%s" if _DB_IS_POSTGRES else "?" for _ in range(n)])
-
-def placeholder() -> str:
-    return "%s" if _DB_IS_POSTGRES else "?"
-
-# ---------- App & Auth ----------
+# Flask setup
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
-
+app.secret_key = os.environ.get("SECRET_KEY", "dev_secret_key_change_me")
+UPLOAD_DIR = os.path.join("static", "students")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
+DB_PATH = "attendance.db"
 
-class User(UserMixin):
-    def __init__(self, user_id: int, username: str, password_hash: str):
-        self.id = str(user_id)
-        self.username = username
-        self.password_hash = password_hash
+# --- Database Connection ---
+def get_db_connection():
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        conn = psycopg2.connect(database_url)
+        conn.cursor_factory = DictCursor
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+    return conn
 
-def password_hash(pw: str) -> str:
-    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+def get_user_classes(user_id, role):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if role == "admin":
+        cur.execute("SELECT class_name FROM classes ORDER BY class_name;")
+    else:
+        cur.execute("SELECT class_name FROM teacher_classes WHERE teacher_id = %s ORDER BY class_name;", (user_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
-@login_manager.user_loader
-def load_user(user_id: str) -> Optional[User]:
-    conn = get_conn()
-    try:
-        q = "SELECT id, username, password_hash FROM users WHERE id = " + ("%s" if _DB_IS_POSTGRES else "?")
-        rows, _ = exec_sql(conn, q, (int(user_id),))
-        if rows:
-            row = rows[0]
-            return User(row[0], row[1], row[2])
-        return None
-    finally:
-        conn.close()
-
-# ---------- Storage ----------
-DATA_DIR = os.path.abspath(os.getenv("DATA_DIR", "data"))
-IMAGES_DIR = os.path.join(DATA_DIR, "images")
-os.makedirs(IMAGES_DIR, exist_ok=True)
-
-# ---------- DDL ----------
-DDL_USERS = """
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY {auto},
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL
-);
-""".format(auto="GENERATED BY DEFAULT AS IDENTITY" if _DB_IS_POSTGRES else "AUTOINCREMENT")
-
-DDL_STUDENTS = """
-CREATE TABLE IF NOT EXISTS students (
-    roll_number TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    class_name TEXT NOT NULL,
-    image_path TEXT
-);
-"""
-
-DDL_CLASSES = """
-CREATE TABLE IF NOT EXISTS classes (
-    name TEXT PRIMARY KEY
-);
-"""
-
-DDL_TEACHERS = """
-CREATE TABLE IF NOT EXISTS teachers (
-    id INTEGER PRIMARY KEY {auto},
-    name TEXT NOT NULL,
-    email TEXT UNIQUE
-);
-""".format(auto="GENERATED BY DEFAULT AS IDENTITY" if _DB_IS_POSTGRES else "AUTOINCREMENT")
-
-DDL_CLASS_TEACHERS = """
-CREATE TABLE IF NOT EXISTS class_teachers (
-    class_name TEXT NOT NULL,
-    teacher_id INTEGER NOT NULL,
-    PRIMARY KEY (class_name, teacher_id),
-    FOREIGN KEY (class_name) REFERENCES classes(name),
-    FOREIGN KEY (teacher_id) REFERENCES teachers(id)
-);
-"""
-
-DDL_ATTENDANCE = """
-CREATE TABLE IF NOT EXISTS attendance (
-    id INTEGER PRIMARY KEY {auto},
-    student_roll_number TEXT NOT NULL,
-    class_name TEXT NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
-    FOREIGN KEY(student_roll_number) REFERENCES students(roll_number)
-);
-""".format(auto="GENERATED BY DEFAULT AS IDENTITY" if _DB_IS_POSTGRES else "AUTOINCREMENT")
+from werkzeug.security import generate_password_hash
+# Make sure your get_db_connection() is defined to connect to PostgreSQL
+# import psycopg2
+# from psycopg2.extras import DictCursor
 
 def setup_database():
-    conn = get_conn()
-    try:
-        for ddl in (DDL_USERS, DDL_STUDENTS, DDL_CLASSES, DDL_TEACHERS, DDL_CLASS_TEACHERS, DDL_ATTENDANCE):
-            exec_sql(conn, ddl); conn.commit()
-        # seed admin
-        rows, _ = exec_sql(conn, "SELECT id FROM users WHERE username = " + placeholder(), ("admin",))
-        if not rows:
-            exec_sql(conn, "INSERT INTO users (username, password_hash) VALUES (" + qmarks(2) + ")", ("admin", password_hash("admin123"))); conn.commit()
-        # seed class
-        rows, _ = exec_sql(conn, "SELECT name FROM classes WHERE name = " + placeholder(), ("ClassA",))
-        if not rows:
-            exec_sql(conn, "INSERT INTO classes (name) VALUES (" + placeholder() + ")", ("ClassA",)); conn.commit()
-    finally:
-        conn.close()
-
-# ---------- Embeddings ----------
-student_embeddings: Dict[str, Any] = {}
-
-def embedding_available() -> bool:
-    return DeepFace is not None
-
-def _represent(img_path: str):
     """
-    Wrapper around DeepFace.represent with Render-safe defaults.
+    Initializes the PostgreSQL database by creating tables and a default admin user.
     """
-    if DeepFace is None:
-        raise RuntimeError("DeepFace not available")
-    return DeepFace.represent(
-        img_path=img_path,
-        model_name=MODEL_NAME,
-        detector_backend=DETECTOR_BACKEND,
-        enforce_detection=ENFORCE_DETECTION
-    )
+    conn = get_db_connection() # This should return a psycopg2 connection
+    cur = conn.cursor()
+
+    # --- Create tables with PostgreSQL syntax ---
+
+    # users table: Changed to SERIAL PRIMARY KEY
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'teacher'
+    );""")
+
+    # classes table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS classes (
+        id SERIAL PRIMARY KEY,
+        class_name TEXT UNIQUE NOT NULL
+    );""")
+
+    # students table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id SERIAL PRIMARY KEY,
+        roll_number TEXT NOT NULL,
+        name TEXT NOT NULL,
+        class_name TEXT NOT NULL DEFAULT 'General',
+        image_path TEXT
+    );""")
+
+    # attendance table: Changed to TIMESTAMP WITH TIME ZONE
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS attendance (
+        id SERIAL PRIMARY KEY,
+        student_roll_number TEXT NOT NULL,
+        name TEXT NOT NULL,
+        class_name TEXT NOT NULL,
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );""")
+    
+    # teacher_classes table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_classes (
+        id SERIAL PRIMARY KEY,
+        teacher_id INTEGER NOT NULL,
+        class_name TEXT NOT NULL,
+        FOREIGN KEY (teacher_id) REFERENCES users(id)
+    );""")
+
+    # --- Ensure default admin user exists, using %s placeholders ---
+    
+    cur.execute("SELECT id, username, role FROM users WHERE username = %s;", ("admin",))
+    row = cur.fetchone()
+
+    if not row:
+        cur.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s);",
+            ("admin", generate_password_hash("admin123"), "admin")
+        )
+        print("[INFO] Default admin created → username: admin | password: admin123 | role: admin")
+    else:
+        if row["role"] != "admin":
+            cur.execute("UPDATE users SET role = 'admin' WHERE username = %s;", ("admin",))
+            print("[INFO] Admin role corrected for user 'admin'")
+
+    conn.commit()
+    conn.close()
+# ---------- Flask-Login User ----------
+class User(UserMixin):
+    def __init__(self, user_id, username, password_hash, role):
+        self.id = user_id; self.username = username; self.password_hash = password_hash; self.role = role
+
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, password_hash, role FROM users WHERE id = %s;", (user_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        return User(row["id"], row["username"], row["password_hash"], row["role"])
+    return None
+
+# --- Face Recognition (Your existing functions go here) ---
+# NOTE: Please copy your functions for build_student_embeddings, cosine_similarity,
+# recognize_face, already_marked_today, and mark_attendance into this section.
+# They do not need changes, but are required for the app to work.
+student_embeddings = {}
+def build_student_embeddings():
+    pass # Add your code here
+def cosine_similarity(a,b):
+    pass # Add your code here
+def recognize_face(frame_bgr):
+    return None, None, None
+def already_marked_today(roll, class_name):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    is_postgres = hasattr(conn, 'cursor_factory')
+    date_clause = "DATE(timestamp) = CURRENT_DATE" if is_postgres else "DATE(timestamp) = DATE('now','localtime')"
+    query = f"SELECT 1 FROM attendance WHERE student_roll_number = %s AND class_name = %s AND {date_clause} LIMIT 1"
+    params = (roll, class_name)
+    if not is_postgres: query = query.replace('%s', '?')
+    cur.execute(query, params)
+    hit = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return hit
+
+def mark_attendance(roll, name, class_name):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    is_postgres = hasattr(conn, 'cursor_factory')
+    query = "INSERT INTO attendance (student_roll_number, name, class_name) VALUES (%s, %s, %s);"
+    params = (roll, name, class_name)
+    if not is_postgres: query = query.replace('%s', '?')
+    cur.execute(query, params)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# ---------- Recognition ----------
+MODEL_NAME = "Facenet512"
+student_embeddings = {}
+
+
+def load_students_from_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT roll_number, name, image_path FROM students ORDER BY roll_number")
+    rows = cur.fetchall()
+    conn.close()
+    return [(r["roll_number"], r["name"], r["image_path"]) for r in rows]
+
 
 def build_student_embeddings():
+    global student_embeddings
     student_embeddings.clear()
-    if not embedding_available():
-        print("[INFO] DeepFace not available; skipping embeddings.", file=sys.stderr)
-        return
-    conn = get_conn()
+
+    for roll, name, image_path in load_students_from_db():
+        if not image_path or not os.path.exists(image_path):
+            continue
+        try:
+            img = cv2.imread(image_path)
+            if img is None:
+                continue
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmpfile:
+                cv2.imwrite(tmpfile.name, img)
+                rep = DeepFace.represent(tmpfile.name, model_name=MODEL_NAME,
+                                         detector_backend="opencv", enforce_detection=False)
+            if rep and isinstance(rep, list):
+                emb = np.array(rep[0]["embedding"], dtype="float32")
+                student_embeddings[roll] = (name, emb)
+        except Exception as e:
+            print(f"[WARN] Embedding failed for {roll} {name}: {e}")
+
+
+def cosine_similarity(a, b):
+    if a is None or b is None:
+        return -1.0
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if denom == 0:
+        return -1.0
+    return float(np.dot(a, b) / denom)
+
+
+def recognize_face(frame_bgr):
     try:
-        rows, _ = exec_sql(conn, "SELECT roll_number, image_path FROM students", ())
-        for r in rows:
-            roll, img = r[0], r[1]
-            if img and os.path.exists(img):
-                try:
-                    rep = _represent(img_path=img)
-                    vec = rep[0]["embedding"] if isinstance(rep, list) and isinstance(rep[0], dict) else rep
-                    if vec is not None:
-                        student_embeddings[roll] = vec
-                except Exception as e:
-                    print(f"[WARN] embed failed for {img}: {e}", file=sys.stderr)
-    finally:
-        conn.close()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmpfile:
+            cv2.imwrite(tmpfile.name, frame_bgr)
+            rep = DeepFace.represent(tmpfile.name, model_name=MODEL_NAME,
+                                     detector_backend="opencv", enforce_detection=False)
+        if not rep:
+            return None, None, None
+        emb = np.array(rep[0]["embedding"], dtype="float32")
+    except Exception as e:
+        print(f"[DEBUG] Recognition failed: {e}")
+        return None, None, None
 
-def cosine_sim(a, b):
-    if not a or not b or len(a) != len(b):
-        return -1.0
-    num = sum(x*y for x, y in zip(a, b))
-    da = math.sqrt(sum(x*x for x in a))
-    db = math.sqrt(sum(y*y for y in b))
-    if da == 0 or db == 0:
-        return -1.0
-    return num / (da * db)
-
-def recognize_vector(vec, threshold: float = 0.35):
-    best_roll, best_score = None, -1.0
-    for roll, emb in student_embeddings.items():
-        score = cosine_sim(vec, emb)
+    best_roll, best_name, best_score = None, None, -1.0
+    for roll, (name, ref_emb) in student_embeddings.items():
+        score = cosine_similarity(emb, ref_emb)
         if score > best_score:
-            best_score, best_roll = score, roll
-    if best_roll is None:
-        return None, 0.0
-    return (best_roll, best_score if best_score >= (1 - threshold) else None)
+            best_score, best_roll, best_name = score, roll, name
 
-# ---------- Minimal UI ----------
-INDEX_HTML = """
-<!doctype html>
-<title>Attendance System</title>
-<h2>Welcome, {{ username }}</h2>
-<ul>
-  <li><a href="/camera_ui">Browser Camera UI</a></li>
-</ul>
-<p>API endpoints:</p>
-<ul>
-  <li>Students: GET/POST /students, PUT/DELETE /students/&lt;roll&gt;, POST /students/&lt;roll&gt;/upload_image</li>
-  <li>Classes: GET/POST /classes, DELETE /classes/&lt;name&gt;</li>
-  <li>Teachers: GET/POST /teachers, POST /classes/assign_teacher</li>
-  <li>Attendance: POST /attendance</li>
-  <li>Summary: GET /summary?date=YYYY-MM-DD&class=ClassA</li>
-  <li>Exports: /export/csv, /export/xlsx, /export/pdf</li>
-  <li>Video: GET /video_feed (IP camera or local only)</li>
-  <li>Embeddings: GET /rebuild_embeddings</li>
-</ul>
-"""
+    if best_score >= 0.35:
+        return best_roll, best_name, best_score
+    return None, None, None
 
-@app.route("/")
-@login_required
-def index():
-    return render_template_string(INDEX_HTML, username=current_user.username)
 
-CAMERA_HTML = """
-<!doctype html>
-<title>Camera UI</title>
-<style> body { font-family: system-ui, sans-serif; } #log { white-space: pre; } </style>
-<h2>Browser Camera</h2>
-<p>This uses your browser camera (works on Render). Click "Start" then "Recognize" to send frames to the server.</p>
-<video id="video" width="480" height="360" autoplay muted playsinline></video><br>
-<canvas id="canvas" width="480" height="360" style="display:none"></canvas>
-<br>
-<button id="start">Start Camera</button>
-<button id="shot">Recognize</button>
-<p id="status"></p>
-<pre id="log"></pre>
-<script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
-const logEl = document.getElementById('log');
+# ---------- Attendance ----------
+def already_marked_today(roll, class_name):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""SELECT 1 FROM attendance
+                   WHERE student_roll_number=? AND class_name=?
+                   AND DATE(timestamp)=DATE('now','localtime') LIMIT 1""",
+                (roll, class_name))
+    hit = cur.fetchone() is not None
+    conn.close()
+    return hit
 
-document.getElementById('start').onclick = async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    video.srcObject = stream;
-    statusEl.textContent = 'Camera started';
-  } catch (e) {
-    statusEl.textContent = 'Camera error: ' + e;
-  }
-};
 
-document.getElementById('shot').onclick = async () => {
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const b64 = canvas.toDataURL('image/jpeg'); // data:image/jpeg;base64,XXXX
-  statusEl.textContent = 'Sending...';
-  try {
-    const resp = await fetch('/recognize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_base64: b64 })
-    });
-    const data = await resp.json();
-    logEl.textContent = JSON.stringify(data, null, 2);
-    statusEl.textContent = 'Done';
-  } catch (e) {
-    statusEl.textContent = 'Request error: ' + e;
-  }
-};
-</script>
-"""
+def mark_attendance(roll, name, class_name):  # <-- now accepts name
+    conn = get_db_connection()
+    cur = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""INSERT INTO attendance
+                   (student_roll_number, name, class_name, timestamp)
+                   VALUES (?,?,?,?)""",
+                (roll, name, class_name, now))
+    conn.commit()
+    conn.close()
+    print(f"[MARKED] {roll} ({name}) [{class_name}] at {now}")
 
-@app.route("/camera_ui")
-@login_required
-def camera_ui():
-    return render_template_string(CAMERA_HTML)
 
-# ---------- Auth ----------
-LOGIN_HTML = """
-<!doctype html>
-<title>Login</title>
-<h2>Login</h2>
-<form method="post">
-  <label>Username <input name="username" required></label><br>
-  <label>Password <input type="password" name="password" required></label><br>
-  <button type="submit">Login</button>
-</form>
-{% if error %}<p style="color:red">{{ error }}</p>{% endif %}
-"""
+# ---------- Webcam ----------
+recent_marked = {}
 
+'''
+def gen_frames(class_name="General"):
+    cap = cv2.VideoCapture(0)  # CAP_AVFOUNDATION is Mac-only; default works cross-platform
+    if not cap.isOpened():
+        print("[ERROR] Unable to open camera")
+        return
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                continue
+
+            roll, name, score = recognize_face(frame)
+            if roll:
+                # rate limit per roll
+                if time.time() - recent_marked.get(roll, 0) > 20:
+                    if not already_marked_today(roll, class_name):
+                        mark_attendance(roll, name, class_name)  # <-- pass name
+                        recent_marked[roll] = time.time()
+
+            ret, buf = cv2.imencode(".jpg", frame)
+            if not ret:
+                continue
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
+    finally:
+        cap.release()
+'''
+
+# ---------- Routes ----------
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    error = None
     if request.method == "POST":
-        username = request.form.get("username","").strip()
-        password = request.form.get("password","")
-        conn = get_conn()
-        try:
-            rows, _ = exec_sql(conn, "SELECT id, username, password_hash FROM users WHERE username = " + placeholder(), (username,))
-            if rows:
-                uid, uname, pw_hash = rows[0][0], rows[0][1], rows[0][2]
-                if password_hash(password) == pw_hash:
-                    login_user(User(uid, uname, pw_hash))
-                    return redirect(url_for("index"))
-            error = "Invalid credentials"
-        finally:
-            conn.close()
-    return render_template_string(LOGIN_HTML, error=error)
+        u, p = request.form["username"], request.form["password"]
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, username, password_hash, role FROM users WHERE username = %s;", (u,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and check_password_hash(row["password_hash"], p):
+            login_user(User(row["id"], row["username"], row["password_hash"], row["role"]))
+            return redirect(url_for("index"))
+        flash("Invalid credentials", "danger")
+    return render_template("login.html")
 
 @app.route("/logout")
 @login_required
@@ -373,429 +347,567 @@ def logout():
     logout_user()
     return redirect(url_for("login"))
 
-# ---------- Students CRUD ----------
-@app.route("/students", methods=["GET"])
+@app.route("/")
 @login_required
-def list_students():
-    conn = get_conn()
-    try:
-        rows, _ = exec_sql(conn, "SELECT roll_number, name, class_name, image_path FROM students ORDER BY class_name, roll_number", (), True)
-        return jsonify([dict(r) for r in rows])
-    finally:
-        conn.close()
-
-@app.route("/students", methods=["POST"])
-@login_required
-def create_student():
-    data = request.get_json(silent=True) or {}
-    rn = (data.get("roll_number") or "").strip()
-    nm = (data.get("name") or "").strip()
-    cls = (data.get("class_name") or "").strip()
-    img = (data.get("image_path") or "").strip() or None
-    if not rn or not nm or not cls:
-        return jsonify(error="roll_number, name, class_name are required"), 400
-    conn = get_conn()
-    try:
-        if _DB_IS_POSTGRES:
-            q = "INSERT INTO students (roll_number, name, class_name, image_path) VALUES (" + qmarks(4) + ") ON CONFLICT (roll_number) DO UPDATE SET name=EXCLUDED.name, class_name=EXCLUDED.class_name, image_path=EXCLUDED.image_path"
-        else:
-            q = "INSERT OR REPLACE INTO students (roll_number, name, class_name, image_path) VALUES (" + qmarks(4) + ")"
-        exec_sql(conn, q, (rn, nm, cls, img)); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-@app.route("/students/<roll>", methods=["PUT"])
-@login_required
-def update_student(roll):
-    data = request.get_json(silent=True) or {}
-    nm = data.get("name")
-    cls = data.get("class_name")
-    img = data.get("image_path")
-    sets, params = [], []
-    if nm is not None:
-        sets.append("name = " + placeholder()); params.append(nm)
-    if cls is not None:
-        sets.append("class_name = " + placeholder()); params.append(cls)
-    if img is not None:
-        sets.append("image_path = " + placeholder()); params.append(img if img else None)
-    if not sets:
-        return jsonify(error="No changes"), 400
-    params.append(roll)
-    q = "UPDATE students SET " + ", ".join(sets) + " WHERE roll_number = " + placeholder()
-    conn = get_conn()
-    try:
-        exec_sql(conn, q, tuple(params)); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-@app.route("/students/<roll>", methods=["DELETE"])
-@login_required
-def delete_student(roll):
-    conn = get_conn()
-    try:
-        exec_sql(conn, "DELETE FROM students WHERE roll_number = " + placeholder(), (roll,)); conn.commit()
-    finally:
-        conn.close()
-    student_embeddings.pop(roll, None)
-    return jsonify(ok=True)
-
-@app.route("/students/<roll>/upload_image", methods=["POST"])
-@login_required
-def upload_student_image(roll):
-    if "image" not in request.files:
-        return jsonify(error="No file part 'image'"), 400
-    f = request.files["image"]
-    if not f.filename:
-        return jsonify(error="No selected file"), 400
-    ext = os.path.splitext(f.filename)[1].lower() or ".jpg"
-    out_path = os.path.join(IMAGES_DIR, f"{roll}{ext}")
-    f.save(out_path)
-    conn = get_conn()
-    try:
-        exec_sql(conn, "UPDATE students SET image_path = " + placeholder() + " WHERE roll_number = " + placeholder(), (out_path, roll)); conn.commit()
-    finally:
-        conn.close()
-    if embedding_available():
-        try:
-            rep = _represent(img_path=out_path)
-            vec = rep[0]["embedding"] if isinstance(rep, list) and isinstance(rep[0], dict) else rep
-            if vec is not None:
-                student_embeddings[roll] = vec
-        except Exception as e:
-            print(f"[WARN] embed failed for {out_path}: {e}", file=sys.stderr)
-    return jsonify(ok=True, image_path=out_path)
-
-# ---------- Classes & Teachers ----------
-@app.route("/classes", methods=["GET"])
-@login_required
-def list_classes():
-    conn = get_conn()
-    try:
-        rows, _ = exec_sql(conn, "SELECT name FROM classes ORDER BY name", (), True)
-        return jsonify([r["name"] for r in rows])
-    finally:
-        conn.close()
-
-@app.route("/classes", methods=["POST"])
-@login_required
-def create_class():
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify(error="name required"), 400
-    conn = get_conn()
-    try:
-        if _DB_IS_POSTGRES:
-            q = "INSERT INTO classes (name) VALUES (" + placeholder() + ") ON CONFLICT (name) DO NOTHING"
-        else:
-            q = "INSERT OR IGNORE INTO classes (name) VALUES (" + placeholder() + ")"
-        exec_sql(conn, q, (name,)); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-@app.route("/classes/<name>", methods=["DELETE"])
-@login_required
-def delete_class(name):
-    conn = get_conn()
-    try:
-        exec_sql(conn, "DELETE FROM classes WHERE name = " + placeholder(), (name,)); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-@app.route("/teachers", methods=["GET"])
-@login_required
-def list_teachers():
-    conn = get_conn()
-    try:
-        rows, _ = exec_sql(conn, "SELECT id, name, email FROM teachers ORDER BY name", (), True)
-        return jsonify([dict(r) for r in rows])
-    finally:
-        conn.close()
-
-@app.route("/teachers", methods=["POST"])
-@login_required
-def create_teacher():
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    email = (data.get("email") or "").strip() or None
-    if not name:
-        return jsonify(error="name required"), 400
-    conn = get_conn()
-    try:
-        exec_sql(conn, "INSERT INTO teachers (name, email) VALUES (" + qmarks(2) + ")", (name, email)); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-@app.route("/classes/assign_teacher", methods=["POST"])
-@login_required
-def assign_teacher():
-    data = request.get_json(silent=True) or {}
-    class_name = (data.get("class_name") or "").strip()
-    teacher_id = data.get("teacher_id")
-    if not class_name or teacher_id is None:
-        return jsonify(error="class_name and teacher_id required"), 400
-    conn = get_conn()
-    try:
-        q = "INSERT INTO class_teachers (class_name, teacher_id) VALUES (" + qmarks(2) + ")"
-        if _DB_IS_POSTGRES:
-            q += " ON CONFLICT DO NOTHING"
-        else:
-            q = "INSERT OR IGNORE INTO class_teachers (class_name, teacher_id) VALUES (" + qmarks(2) + ")"
-        exec_sql(conn, q, (class_name, int(teacher_id))); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-# ---------- Attendance ----------
-@app.route("/attendance", methods=["POST"])
-@login_required
-def mark_attendance():
-    data = request.get_json(silent=True) or {}
-    rn = (data.get("student_roll_number") or "").strip()
-    cls = (data.get("class_name") or "").strip()
-    ts = data.get("timestamp")
-    try:
-        ts_dt = dt.datetime.fromisoformat(ts) if ts else dt.datetime.now()
-    except Exception:
-        return jsonify(error="timestamp must be ISO 8601"), 400
-    if not rn or not cls:
-        return jsonify(error="student_roll_number and class_name are required"), 400
-    conn = get_conn()
-    try:
-        exec_sql(conn, "INSERT INTO attendance (student_roll_number, class_name, timestamp) VALUES (" + qmarks(3) + ")", (rn, cls, ts_dt)); conn.commit()
-    finally:
-        conn.close()
-    return jsonify(ok=True)
-
-# ---------- Summary ----------
-@app.route("/summary", methods=["GET"])
-@login_required
-def summary():
-    selected_date = request.args.get("date")
-    allowed_classes = request.args.getlist("class")
-    q = (
-        "SELECT s.roll_number, s.name, a.class_name, DATE(a.timestamp) AS day "
-        "FROM attendance a JOIN students s ON s.roll_number = a.student_roll_number"
-    )
+def index():
+    # This function is fully corrected for PostgreSQL
+    conn = get_db_connection()
+    cur = conn.cursor()
+    selected_class = request.args.get("class_filter")
+    selected_date = request.args.get("date_filter") or date.today().isoformat()
+    q = "SELECT s.roll_number, s.name, a.class_name, a.timestamp FROM attendance a JOIN students s ON a.student_roll_number = s.roll_number"
     cond, params = [], []
+    allowed_classes_rows = get_user_classes(current_user.id, current_user.role)
+    allowed_classes = [c["class_name"] for c in allowed_classes_rows]
+    if current_user.role == "teacher" and allowed_classes:
+        placeholders = ','.join(['%s'] * len(allowed_classes))
+        cond.append(f"a.class_name IN ({placeholders})")
+        params.extend(allowed_classes)
+    if selected_class and selected_class != "all":
+        cond.append("a.class_name = %s")
+        params.append(selected_class)
     if selected_date:
-        cond.append("DATE(a.timestamp) = " + placeholder()); params.append(selected_date)
+        cond.append("DATE(a.timestamp) = %s")
+        params.append(selected_date)
+    if cond:
+        q += " WHERE " + " AND ".join(cond)
+    q += " ORDER BY a.timestamp DESC;"
+    cur.execute(q, tuple(params))
+    records = cur.fetchall()
+    total_students, present_today = 0, 0
     if allowed_classes:
-        cond.append("a.class_name IN (" + qmarks(len(allowed_classes)) + ")"); params.extend(allowed_classes)
+        placeholders = ','.join(['%s'] * len(allowed_classes))
+        cur.execute(f"SELECT COUNT(*) FROM students WHERE class_name IN ({placeholders});", tuple(allowed_classes))
+        res = cur.fetchone(); total_students = res[0] if res else 0
+        cur.execute(f"SELECT COUNT(DISTINCT student_roll_number) FROM attendance WHERE DATE(timestamp) = %s AND class_name IN ({placeholders});", (selected_date, *allowed_classes))
+        res = cur.fetchone(); present_today = res[0] if res else 0
+    absent_today = total_students - present_today
+    cur.close()
+    conn.close()
+    return render_template("index.html", records=records, classes=allowed_classes, selected_class=selected_class, selected_date=selected_date, total_students=total_students, total_classes=len(allowed_classes), present_today=present_today, absent_today=absent_today, class_labels=allowed_classes, present_counts=[], absent_counts=[])
+
+
+
+@app.route("/students", methods=["GET", "POST"])
+@login_required
+def students_page():
+    if current_user.role != "admin": return redirect(url_for("index"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if request.method == "POST":
+        roll = request.form.get("roll")
+        name = request.form.get("name")
+        branch = request.form.get("branch", "General")
+        image_path = None # Add logic to handle file upload and set this path
+        cur.execute("SELECT 1 FROM students WHERE roll_number = %s;", (roll,))
+        if cur.fetchone():
+            cur.execute("UPDATE students SET name=%s, branch=%s WHERE roll_number=%s;", (name, branch, roll))
+        else:
+            cur.execute("INSERT INTO students (roll_number, name, branch) VALUES (%s, %s, %s);", (roll, name, branch))
+        conn.commit()
+        flash("Student saved successfully.", "success")
+        cur.close()
+        conn.close()
+        return redirect(url_for("students_page"))
+    # GET Logic
+    q = request.args.get("q", "")
+    like = f"%{q}%"
+    cur.execute("SELECT * FROM students WHERE roll_number LIKE %s OR name LIKE %s OR branch LIKE %s ORDER BY name;", (like, like, like))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return render_template("students.html", rows=rows, q=q)
+# Add this new route to app.py
+# You can DELETE the old video_feed and gen_frames functions
+
+@app.route('/recognize', methods=['POST'])
+@login_required
+def recognize():
+    data = request.get_json()
+    class_name = data.get('class_name', 'General')
+    image_data = data['image_data'].split(',')[1] # Remove the "data:image/jpeg;base64," part
+
+    # Decode the image and convert to a format OpenCV can use
+    img_bytes = base64.b64decode(image_data)
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # Recognize the face
+    roll, name, score = recognize_face(frame)
+
+    if roll and not already_marked_today(roll, class_name):
+        mark_attendance(roll, name, class_name)
+        return {"status": "success", "name": name, "roll": roll}
+    
+    elif roll:
+        return {"status": "already_marked", "name": name}
+
+    return jsonify({"status": "not_recognized"})
+
+    # --- GET: search includes branch now ---
+    q = (request.args.get("q") or "").strip()
+    if q:
+        like = f"%{q}%"
+        rows = cur.execute(
+            """
+            SELECT roll_number, name, branch, image_path
+            FROM students
+            WHERE roll_number LIKE ? OR name LIKE ? OR branch LIKE ?
+            ORDER BY branch, name
+            """,
+            (like, like, like),
+        ).fetchall()
+    else:
+        rows = cur.execute(
+            """
+            SELECT roll_number, name, branch, image_path
+            FROM students
+            ORDER BY branch, name
+            """
+        ).fetchall()
+
+    conn.close()
+    return render_template("students.html", rows=rows, q=q)
+
+
+
+@app.route("/students/<roll_number>/delete", methods=["POST"])
+@login_required
+def delete_student(roll_number):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM students WHERE roll_number=?", (roll_number,))
+    conn.commit()
+    conn.close()
+    build_student_embeddings()
+    flash("Student deleted", "success")
+    return redirect(url_for("students_page"))
+
+
+@app.route("/admin")
+@login_required
+def admin_panel():
+    if current_user.role != "admin": return redirect(url_for("index"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, role FROM users ORDER BY username;")
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
+    return render_template("admin.html", users=users)
+    
+@app.route("/admin/assign_class", methods=["GET", "POST"])
+@login_required
+def assign_class():
+    if current_user.role != "admin": return redirect(url_for("index"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if request.method == "POST":
+        teacher_id = request.form.get("teacher_id")
+        class_name = request.form.get("class_name")
+        if "assign" in request.form:
+             cur.execute("INSERT INTO teacher_classes (teacher_id, class_name) VALUES (%s, %s);", (teacher_id, class_name))
+        elif "delete" in request.form:
+            assign_id = request.form.get("assign_id")
+            cur.execute("DELETE FROM teacher_classes WHERE id = %s;", (assign_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return redirect(url_for("assign_class"))
+    
+    cur.execute("SELECT id, username FROM users WHERE role='teacher';")
+    teachers = cur.fetchall()
+    cur.execute("SELECT class_name FROM classes;")
+    classes = cur.fetchall()
+    cur.execute("SELECT t.id, u.username, t.class_name FROM teacher_classes t JOIN users u ON u.id = t.teacher_id;")
+    assigned = cur.fetchall()
+    cur.close()
+    conn.close()
+    return render_template("assign_class.html", teachers=teachers, classes=classes, assigned=assigned)
+
+
+
+@app.route("/admin/create", methods=["POST"])
+@login_required
+def create_user():
+    if current_user.role != "admin": return redirect(url_for("index"))
+    username = request.form.get("username")
+    password = request.form.get("password")
+    role = request.form.get("role", "teacher")
+    if not username or not password:
+        flash("Username and password are required.", "danger")
+        return redirect(url_for("admin_panel"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s);",
+                    (username, generate_password_hash(password), role))
+        conn.commit()
+        flash("User created successfully.", "success")
+    except Exception:
+        conn.rollback()
+        flash("Username already exists.", "warning")
+    cur.close()
+    conn.close()
+    return redirect(url_for("admin_panel"))
+
+@app.route("/admin/delete/<int:user_id>", methods=["POST"])
+@login_required
+def delete_user(user_id):
+    if current_user.role != "admin":
+        flash("Access denied.", "danger")
+        return redirect(url_for("index"))
+
+    conn = get_db_connection()
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    flash("User deleted", "success")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/capture_student", methods=["GET", "POST"])
+@login_required
+def capture_student():
+    if request.method == "POST":
+        roll = request.form.get("roll")
+        name = request.form.get("name")
+        branch = request.form.get("branch", "General")
+        # Add logic to handle image data from the form
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM students WHERE roll_number = %s;", (roll,))
+        if cur.fetchone():
+            cur.execute("UPDATE students SET name=%s, branch=%s WHERE roll_number=%s;", (name, branch, roll))
+        else:
+            cur.execute("INSERT INTO students (roll_number, name, branch) VALUES (%s, %s, %s);", (roll, name, branch))
+        conn.commit()
+        cur.close()
+        conn.close()
+        flash("Student saved successfully.", "success")
+        return redirect(url_for("students_page"))
+    return render_template("capture_student.html")
+
+
+@app.route("/classes", methods=["GET", "POST"])
+@login_required
+def classes_page():
+    if current_user.role != "admin": return redirect(url_for("index"))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if request.method == "POST":
+        cname = request.form.get("class_name")
+        if cname:
+            try:
+                cur.execute("INSERT INTO classes (class_name) VALUES (%s);", (cname,))
+                conn.commit()
+                flash("Class added.", "success")
+            except Exception:
+                conn.rollback()
+                flash("Class already exists.", "warning")
+    cur.execute("SELECT * FROM classes ORDER BY class_name;")
+    classes = cur.fetchall()
+    cur.close()
+    conn.close()
+    return render_template("classes.html", classes=classes)
+
+
+@app.route("/classes/<int:cid>/delete", methods=["POST"])
+@login_required
+def delete_class(cid):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM classes WHERE id=?", (cid,))
+    conn.commit()
+    conn.close()
+    flash("Class deleted", "success")
+    return redirect(url_for("classes_page"))
+
+
+@app.route("/camera")
+@login_required
+def camera_page():
+    classes = get_user_classes(current_user.id, current_user.role)
+    return render_template("camera.html", classes=classes)
+
+'''@app.route("/video_feed")
+@login_required
+def video_feed():
+    return Response(gen_frames(class_name=request.args.get("class_name", "General")),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+'''
+
+@app.route("/reset_attendance", methods=["POST"])
+@login_required
+def reset_attendance():
+    if current_user.role != "admin":
+        flash("Access denied. Admins only.", "danger")
+        return redirect(url_for("index"))
+
+    class_name = request.form.get("class_name") or "General"
+    date_filter = request.form.get("date_filter")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if date_filter:
+        cur.execute("DELETE FROM attendance WHERE class_name = ? AND DATE(timestamp) = ?",
+                    (class_name, date_filter))
+    else:
+        cur.execute("DELETE FROM attendance WHERE class_name = ?", (class_name,))
+    conn.commit()
+    conn.close()
+
+    flash("Attendance reset successfully", "success")
+    return redirect(url_for("camera_page", class_name=class_name))
+
+
+@app.route("/download")
+@login_required
+def download():
+    class_filter = request.args.get("class_filter")
+    date_filter = request.args.get("date_filter")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    q = """SELECT s.roll_number, s.name, a.class_name, a.timestamp
+           FROM attendance a JOIN students s ON a.student_roll_number = s.roll_number"""
+    cond, params = [], []
+    if class_filter and class_filter != "all":
+        cond.append("a.class_name=?")
+        params.append(class_filter)
+    if date_filter:
+        cond.append("DATE(a.timestamp)=?")
+        params.append(date_filter)
     if cond:
         q += " WHERE " + " AND ".join(cond)
     q += " ORDER BY a.timestamp DESC"
+    rows = cur.execute(q, params).fetchall()
+    conn.close()
 
-    conn = get_conn()
-    try:
-        rows, _ = exec_sql(conn, q, tuple(params), True)
-        records = [dict(r) for r in rows]
-        total_students = present_today = absent_today = 0
-        if allowed_classes:
-            q_total = "SELECT COUNT(*) FROM students WHERE class_name IN (" + qmarks(len(allowed_classes)) + ")"
-            rows_total, _ = exec_sql(conn, q_total, tuple(allowed_classes))
-            total_students = rows_total[0][0] if rows_total else 0
-            if selected_date:
-                q_present = (
-                    "SELECT COUNT(DISTINCT student_roll_number) FROM attendance "
-                    "WHERE DATE(timestamp) = " + placeholder() + " AND class_name IN (" + qmarks(len(allowed_classes)) + ")"
-                )
-                rows_present, _ = exec_sql(conn, q_present, (selected_date, *allowed_classes))
-                present_today = rows_present[0][0] if rows_present else 0
-                absent_today = max(total_students - present_today, 0)
-        return jsonify({"filters": {"date": selected_date, "classes": allowed_classes},"rows": records,"totals": {"total_students": total_students,"present": present_today,"absent": absent_today}})
-    finally:
-        conn.close()
-
-# ---------- Video & Capture ----------
-IP_CAM_URL = os.getenv("IP_CAM_URL", "").strip()  # e.g., rtsp://user:pass@host/stream
-
-def gen_frames(source=0):
-    if cv2 is None:
-        return
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        return
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            ok, buf = cv2.imencode(".jpg", frame)
-            if not ok:
-                continue
-            jpg = buf.tobytes()
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n")
-    finally:
-        cap.release()
-
-@app.route("/video_feed")
-@login_required
-def video_feed():
-    # On Render: works only if IP_CAM_URL points to a reachable IP camera.
-    if cv2 is None:
-        return jsonify(error="OpenCV not available"), 503
-    if IP_CAM_URL:
-        source = IP_CAM_URL
-    else:
-        # Local camera only works when you run the app on a machine with /dev/video0
-        source = int(request.args.get("camera_index", 0))
-    return Response(gen_frames(source), mimetype="multipart/x-mixed-replace; boundary=frame")
-
-@app.route("/capture", methods=["POST"])
-@login_required
-def capture():
-    if cv2 is None:
-        return jsonify(error="OpenCV not available"), 503
-    source = IP_CAM_URL if IP_CAM_URL else int((request.get_json(silent=True) or {}).get("camera_index", 0))
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        return jsonify(error="Cannot open camera source"), 500
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
-        return jsonify(error="Failed to capture"), 500
-    _, buf = cv2.imencode(".jpg", frame)
-    return Response(buf.tobytes(), mimetype="image/jpeg")
-
-# ---------- Recognition (multipart OR base64 JSON) ----------
-@app.route("/recognize", methods=["POST"])
-@login_required
-def recognize():
-    if not embedding_available():
-        return jsonify(error="DeepFace not available"), 503
-
-    image_path = None
-    temp_file = None
-    # Case 1: multipart upload
-    if "image" in request.files and request.files["image"].filename:
-        f = request.files["image"]
-        temp_file = os.path.join(IMAGES_DIR, f"tmp_{uuid.uuid4().hex}.jpg")
-        f.save(temp_file)
-        image_path = temp_file
-    else:
-        # Case 2: JSON base64 (data URL or raw b64)
-        data = request.get_json(silent=True) or {}
-        b64 = data.get("image_base64")
-        if not b64:
-            return jsonify(error="Provide multipart 'image' or JSON 'image_base64'"), 400
-        if b64.startswith("data:image"):
-            b64 = b64.split(",", 1)[1]
-        try:
-            img_bytes = base64.b64decode(b64)
-        except Exception:
-            return jsonify(error="Invalid base64"), 400
-        temp_file = os.path.join(IMAGES_DIR, f"tmp_{uuid.uuid4().hex}.jpg")
-        with open(temp_file, "wb") as fh:
-            fh.write(img_bytes)
-        image_path = temp_file
-
-    try:
-        rep = _represent(img_path=image_path)
-        vec = rep[0]["embedding"] if isinstance(rep, list) and isinstance(rep[0], dict) else rep
-        if not vec:
-            return jsonify(match=None)
-        roll, score = recognize_vector(vec)
-        if roll and score:
-            # mark attendance with student's class
-            conn = get_conn()
-            try:
-                rows, _ = exec_sql(conn, "SELECT class_name FROM students WHERE roll_number = " + placeholder(), (roll,))
-                cls = rows[0][0] if rows else "Unknown"
-                exec_sql(conn, "INSERT INTO attendance (student_roll_number, class_name, timestamp) VALUES (" + qmarks(3) + ")", (roll, cls, dt.datetime.now())); conn.commit()
-            finally:
-                conn.close()
-            return jsonify(match={"roll_number": roll, "confidence": float(score)})
-        return jsonify(match=None)
-    finally:
-        if temp_file:
-            try: os.remove(temp_file)
-            except Exception: pass
-
-# ---------- Exports ----------
-def rows_for_export(selected_date: Optional[str] = None):
-    q = (
-        "SELECT s.roll_number, s.name, a.class_name, a.timestamp "
-        "FROM attendance a JOIN students s ON s.roll_number = a.student_roll_number"
-    )
-    params = []
-    if selected_date:
-        q += " WHERE DATE(a.timestamp) = " + placeholder()
-        params.append(selected_date)
-    q += " ORDER BY a.timestamp DESC"
-    conn = get_conn()
-    try:
-        rows, _ = exec_sql(conn, q, tuple(params))
-        return rows
-    finally:
-        conn.close()
-
-@app.route("/export/csv")
-@login_required
-def export_csv():
-    date_str = request.args.get("date")
-    rows = rows_for_export(date_str)
-    out = io.StringIO()
-    w = csv.writer(out)
-    w.writerow(["roll_number", "name", "class_name", "timestamp"])
+    output = io.StringIO()
+    w = csv.writer(output)
+    w.writerow(["Roll Number", "Name", "Class Name", "Timestamp"])
     for r in rows:
-        w.writerow([r[0], r[1], r[2], r[3]])
-    out.seek(0)
-    return Response(out.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=attendance{('_'+date_str) if date_str else ''}.csv"})
+        w.writerow([r["roll_number"], r["name"], r["class_name"], r["timestamp"]])
+    mem = io.BytesIO(output.getvalue().encode("utf-8"))
+    mem.seek(0)
+    return send_file(mem, as_attachment=True, download_name="attendance.csv", mimetype="text/csv")
 
-@app.route("/export/xlsx")
+
+@app.route("/summary")
 @login_required
-def export_xlsx():
-    if openpyxl is None:
-        return jsonify(error="openpyxl not available"), 503
-    date_str = request.args.get("date")
-    rows = rows_for_export(date_str)
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Attendance"
-    ws.append(["roll_number", "name", "class_name", "timestamp"])
+def summary():
+    start = request.args.get("start")
+    end = request.args.get("end")
+    class_filter = request.args.get("class")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    q = "SELECT s.roll_number, s.name, a.class_name, DATE(a.timestamp) as day FROM attendance a JOIN students s ON s.roll_number = a.student_roll_number"
+    cond, params = [], []
+    allowed_classes = [c["class_name"] for c in get_user_classes(current_user.id, current_user.role)]
+    if current_user.role == "teacher" and allowed_classes:
+        # Correct placeholder for a list of items in PostgreSQL
+        placeholders = ','.join(['%s'] * len(allowed_classes))
+        cond.append(f"a.class_name IN ({placeholders})")
+        params.extend(allowed_classes)
+    if class_filter:
+        cond.append("a.class_name = %s")
+        params.append(class_filter)
+    if start:
+        cond.append("DATE(a.timestamp) >= %s")
+        params.append(start)
+    if end:
+        cond.append("DATE(a.timestamp) <= %s")
+        params.append(end)
+    if cond:
+        q += " WHERE " + " AND ".join(cond)
+    cur.execute(q, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    # ... (rest of the function to calculate counts) ...
+    counts = defaultdict(int)
+    days_map = defaultdict(set)
     for r in rows:
-        ws.append([r[0], r[1], r[2], r[3]])
-    bio = io.BytesIO(); wb.save(bio); bio.seek(0)
-    return send_file(bio, as_attachment=True, download_name=f"attendance{('_'+date_str) if date_str else ''}.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        days_map[(r["roll_number"], r["name"])].add(r["day"])
+    for k, v in days_map.items():
+        counts[k] = len(v)
+    return render_template("summary.html", counts=counts, start=start, end=end,
+                           classes=allowed_classes, class_filter=class_filter)
 
-@app.route("/export/pdf")
+# --------- Monthly summary helpers & routes (fixed indentation) ---------
+def _query_monthly_summary(start_m: str | None, end_m: str | None, class_filter: str | None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    is_postgres = hasattr(conn, 'cursor_factory')
+    
+    # Use TO_CHAR for PostgreSQL and strftime for SQLite
+    month_format_sql = "TO_CHAR(a.timestamp, 'YYYY-MM')" if is_postgres else "strftime('%Y-%m', a.timestamp)"
+    
+    sql = f"""
+      SELECT a.class_name, {month_format_sql} AS month,
+             COUNT(DISTINCT a.student_roll_number) AS presents
+      FROM attendance a
+    """
+    cond, params = [], []
+    if class_filter:
+        cond.append("a.class_name = %s")
+        params.append(class_filter)
+    if start_m:
+        cond.append(f"{month_format_sql} >= %s")
+        params.append(start_m)
+    if end_m:
+        cond.append(f"{month_format_sql} <= %s")
+        params.append(end_m)
+    if cond:
+        sql += " WHERE " + " AND ".join(cond)
+    sql += f" GROUP BY a.class_name, {month_format_sql} ORDER BY month DESC, a.class_name ASC"
+    
+    if not is_postgres:
+        sql = sql.replace('%s', '?')
+
+    cur.execute(sql, tuple(params))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [{"class_name": r["class_name"], "month": r["month"], "presents": r["presents"]} for r in rows]
+
+
+@app.route("/summary_report")
 @login_required
-def export_pdf():
-    if canvas is None or A4 is None:
-        return jsonify(error="reportlab not available"), 503
-    date_str = request.args.get("date")
-    rows = rows_for_export(date_str)
-    bio = io.BytesIO()
-    p = canvas.Canvas(bio, pagesize=A4)
+def summary_report():
+    # defaults: current month
+    today_month = date.today().strftime("%Y-%m")
+    start_m = request.args.get("start_m") or today_month
+    end_m = request.args.get("end_m") or today_month
+    class_filter = request.args.get("class") or ""
+
+    # classes for filter dropdown
+    conn = get_db_connection()
+    classes = conn.execute("SELECT class_name FROM classes ORDER BY class_name").fetchall()
+    conn.close()
+
+    data = _query_monthly_summary(start_m, end_m, class_filter if class_filter else None)
+    return render_template("summary_report.html",
+                           rows=data, classes=classes,
+                           start_m=start_m, end_m=end_m, class_filter=class_filter)
+
+
+@app.route("/summary_report.csv")
+@login_required
+def summary_report_csv():
+    start_m = request.args.get("start_m")
+    end_m = request.args.get("end_m")
+    class_filter = request.args.get("class")
+
+    data = _query_monthly_summary(start_m, end_m, class_filter if class_filter else None)
+
+    output = io.StringIO()
+    w = csv.writer(output)
+    w.writerow(["Month", "Class", "Unique Students Present"])
+    for r in data:
+        w.writerow([r["month"], r["class_name"], r["presents"]])
+
+    mem = io.BytesIO(output.getvalue().encode("utf-8"))
+    mem.seek(0)
+    fname = f"attendance_summary_{start_m or 'all'}_{end_m or 'all'}.csv"
+    return send_file(mem, as_attachment=True, download_name=fname, mimetype="text/csv")
+
+
+@app.route("/download_excel")
+@login_required
+def download_excel():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    rows = cur.execute("""SELECT s.roll_number, s.name, a.class_name, a.timestamp
+                          FROM attendance a
+                          JOIN students s ON a.student_roll_number = s.roll_number
+                          ORDER BY a.timestamp DESC""").fetchall()
+    conn.close()
+
+    if not rows:
+        flash("No records to export", "warning")
+        return redirect(url_for("summary"))
+
+    # Use pandas if available; otherwise fall back to CSV export
+    if pd is None:
+        output = io.StringIO()
+        w = csv.writer(output)
+        w.writerow(["Roll", "Name", "Class", "Timestamp"])
+        for r in rows:
+            w.writerow([r["roll_number"], r["name"], r["class_name"], r["timestamp"]])
+        mem = io.BytesIO(output.getvalue().encode("utf-8"))
+        mem.seek(0)
+        return send_file(mem, as_attachment=True, download_name="attendance.csv", mimetype="text/csv")
+
+    df = pd.DataFrame(rows, columns=["Roll", "Name", "Class", "Timestamp"])
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Attendance")
+    output.seek(0)
+
+    return send_file(output,
+                     as_attachment=True,
+                     download_name="attendance.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/download_pdf")
+@login_required
+def download_pdf():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    rows = cur.execute("""SELECT s.roll_number, s.name, a.class_name, a.timestamp
+                          FROM attendance a
+                          JOIN students s ON a.student_roll_number = s.roll_number
+                          ORDER BY a.timestamp DESC""").fetchall()
+    conn.close()
+
+    if not rows:
+        flash("No records to export", "warning")
+        return redirect(url_for("summary"))
+
+    if canvas is None:
+        flash("PDF export requires reportlab to be installed", "warning")
+        return redirect(url_for("summary"))
+
+    output = io.BytesIO()
+    c = canvas.Canvas(output, pagesize=A4)
     width, height = A4
-    x, y = 40, height - 40
-    p.setFont("Helvetica-Bold", 14); p.drawString(x, y, f"Attendance Report {('('+date_str+')') if date_str else ''}")
-    y -= 30; p.setFont("Helvetica", 10)
-    p.drawString(x, y, "roll_number"); p.drawString(x+120, y, "name"); p.drawString(x+270, y, "class_name"); p.drawString(x+400, y, "timestamp")
-    y -= 18
-    for r in rows:
-        if y < 50:
-            p.showPage(); y = height - 50
-        p.drawString(x, y, str(r[0])); p.drawString(x+120, y, str(r[1])); p.drawString(x+270, y, str(r[2])); p.drawString(x+400, y, str(r[3]))
-        y -= 16
-    p.showPage(); p.save(); bio.seek(0)
-    return send_file(bio, as_attachment=True, download_name=f"attendance{('_'+date_str) if date_str else ''}.pdf", mimetype="application/pdf")
+    y = height - 40
 
-# ---------- Utilities ----------
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(200, y, "Attendance Report")
+    y -= 40
+
+    c.setFont("Helvetica", 10)
+    for r in rows:
+        line = f"{r['roll_number']} | {r['name']} | {r['class_name']} | {r['timestamp']}"
+        c.drawString(40, y, line)
+        y -= 20
+        if y < 40:
+            c.showPage()
+            y = height - 40
+            c.setFont("Helvetica", 10)
+
+    c.save()
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="attendance.pdf", mimetype="application/pdf")
+
+
 @app.route("/rebuild_embeddings")
 @login_required
 def rebuild_embeddings():
     build_student_embeddings()
-    return jsonify(ok=True, loaded=len(student_embeddings))
+    return "Embeddings rebuilt", 200
+
 
 # ---------- Main ----------
-if __name__ == "__main__":
+'''if __name__ == "__main__":
+    # Ensure DB exists and has correct tables/defaults BEFORE building embeddings
     setup_database()
-    # Do NOT build embeddings at boot on Render; use /rebuild_embeddings after deploy.
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT","5001")), debug=True)
+    build_student_embeddings()
+    if not student_embeddings:
+        print("[INFO] No embeddings yet. Upload or capture student images and visit /rebuild_embeddings")
+    app.run(host="0.0.0.0", port=5001, debug=True)
+'''
+
