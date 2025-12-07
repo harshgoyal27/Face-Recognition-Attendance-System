@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block title %}My Attendance{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4 d-flex flex-wrap align-items-center justify-content-between gap-3 py-3">
+  <div class="d-flex align-items-center gap-3">
+      {% if student.image_path %}
+        <img src="/{{ student.image_path }}" alt="Profile" class="rounded-circle shadow-sm" style="width: 64px; height: 64px; object-fit: cover; border: 2px solid #fff;">
+      {% else %}
+        <img src="https://cdn.jsdelivr.net/gh/edent/SuperTinyIcons/images/svg/user.svg" alt="No Photo" class="rounded-circle bg-white shadow-sm p-2" style="width: 64px; height: 64px;">
+      {% endif %}
+      <div>
+        <h4 class="mb-0 fw-bold text-dark">{{ student.username }}</h4>
+        <div class="d-flex gap-2 mt-1">
+            <span class="badge bg-light text-secondary border fw-normal">{{ student.id }}</span>
+            <span class="badge bg-light text-secondary border fw-normal">{{ student.branch }}</span>
+            <span class="badge bg-light text-secondary border fw-normal">{{ student.year }}</span>
+        </div>
+      </div>
+  </div>
+  <div>
+      <a href="{{ url_for('generate_report_card', roll_number=student.id) }}" class="btn btn-sm btn-outline-primary d-flex align-items-center gap-2">
+        <i class="bi bi-file-earmark-pdf-fill"></i> Download Report Card
+      </a>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-md-7">
+      <div class="card-surface p-3 h-100">
+          <h5 class="mb-3 border-bottom pb-2">Attendance Overview</h5>
+          <div class="row g-3">
+              {% for class_name, data in stats.items() %}
+              {% set percent = (data['present'] / data['total'] * 100) | round(1) if data['total'] > 0 else 0 %}
+              <div class="col-12">
+                  <div class="p-2 rounded bg-light border d-flex justify-content-between align-items-center">
+                      <div style="min-width: 0;">
+                          <div class="fw-semibold text-truncate" title="{{ class_name }}">{{ class_name }}</div>
+                          <div class="small text-muted d-flex gap-2 align-items-center mt-1">
+                              <span>{{ data['present'] }}/{{ data['total'] }} Attended</span>
+                              {% if data['risk'] < 75 %}
+                                <span class="badge bg-danger-subtle text-danger" title="Predicted attendance if trend continues"><i class="bi bi-graph-down"></i> Risk: {{ data['risk'] }}%</span>
+                              {% else %}
+                                <span class="badge bg-success-subtle text-success"><i class="bi bi-graph-up"></i> Safe: {{ data['risk'] }}%</span>
+                              {% endif %}
+                          </div>
+                      </div>
+                      <div class="text-end ps-3">
+                          <span class="fs-5 fw-bold {% if percent < 75 %}text-danger{% else %}text-success{% endif %}">{{ percent }}%</span>
+                      </div>
+                  </div>
+              </div>
+              {% else %}
+              <div class="col-12 text-center text-muted py-4">No classes assigned yet.</div>
+              {% endfor %}
+          </div>
+      </div>
+    </div>
+
+    <div class="col-md-5">
+        <div class="card-surface p-3 h-100">
+            <h5 class="mb-3 border-bottom pb-2">Filter History</h5>
+            <form method="GET">
+                <div class="mb-3">
+                    <label class="form-label small text-muted text-uppercase fw-bold">From Date</label>
+                    <input type="date" name="start_date" class="form-control" value="{{ start_date or '' }}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label small text-muted text-uppercase fw-bold">To Date</label>
+                    <input type="date" name="end_date" class="form-control" value="{{ end_date or '' }}">
+                </div>
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary">Apply Filter</button>
+                    {% if start_date or end_date %}
+                    <a href="{{ url_for('student_dashboard') }}" class="btn btn-outline-secondary btn-sm">Clear Filters</a>
+                    {% endif %}
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="card-surface">
+  <div class="p-3 border-bottom bg-light rounded-top d-flex justify-content-between align-items-center">
+    <h5 class="mb-0">Detailed History</h5>
+    <div class="small text-muted">Includes Holidays & Special Status</div>
+  </div>
+  <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="sticky-top bg-white">
+        <tr>
+          <th style="width: 25%;">Date</th>
+          <th style="width: 40%;">Subject</th>
+          <th style="width: 15%;">Time</th>
+          <th style="width: 20%;" class="text-center">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in history %}
+        <tr>
+          <td class="text-nowrap">{{ r['date'] }}</td>
+          <td class="fw-medium text-truncate" style="max-width: 200px;">{{ r['class_name'] }}</td>
+          <td class="text-muted small">{{ r['time'].split(' ')[1] if r['time'] != 'N/A' else '--:--' }}</td>
+          <td class="text-center">
+            {% if r['status'] == 'Present' %}
+                <span class="badge bg-success-subtle text-success border border-success px-3 rounded-pill">Present</span>
+            
+            {% elif r['status'] == 'Absent' %}
+                <span class="badge bg-danger-subtle text-danger border border-danger px-3 rounded-pill">Absent</span>
+
+            {% elif r['status'] == 'On Leave' %}
+                <span class="badge bg-warning-subtle text-warning border border-warning px-3 rounded-pill">On Leave</span>
+            
+            {% elif r['status'] == 'Mass Bunk' %}
+                <span class="badge bg-danger text-white border border-danger px-2 rounded-pill" title="Mass Bunk">Mass Bunk</span>
+            
+            {% elif r['status'] == 'Class Rescheduled' %}
+                <span class="badge bg-warning text-dark border border-warning px-2 rounded-pill" title="Class Rescheduled">Rescheduled</span>
+            
+            {% elif r['status'] == 'Teacher on Leave' %}
+                <span class="badge bg-secondary text-white px-2 rounded-pill" title="Teacher on Leave">Teacher Leave</span>
+            
+            {% elif r['status'] == 'Gazette Holiday' %}
+                <span class="badge bg-info text-dark border border-info px-2 rounded-pill" title="Gazette Holiday">Holiday</span>
+            
+            {% else %}
+                <span class="badge bg-light text-dark border px-2">{{ r['status'] }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-center text-muted py-4">No records found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

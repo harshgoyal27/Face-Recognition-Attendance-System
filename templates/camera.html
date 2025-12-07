@@ -5,14 +5,18 @@
 {% block content %}
 <div class="page-header mb-4">
   <h2 class="mb-1">Camera Attendance</h2>
-  <div class="text-secondary">The camera below uses your browser. Attendance will be marked automatically.</div>
+  <div class="text-secondary">Attendance will be marked automatically. Location access is required.</div>
 </div>
 
 <div class="row g-4">
   <div class="col-md-8">
-    <div class="card-surface p-2 mb-3">
-      <video id="video" autoplay playsinline class="img-fluid rounded-3"></video>
-      <canvas id="canvas" style="display:none;"></canvas>
+    <div class="card-surface p-2 mb-3 position-relative">
+        <video id="video" autoplay playsinline class="img-fluid rounded-3"></video>
+        <div id="motionOverlay" class="position-absolute top-50 start-50 translate-middle badge bg-warning text-dark p-3 fs-5" style="display:none;">
+            <i class="bi bi-exclamation-circle"></i> Please move slightly!
+        </div>
+        <canvas id="canvas" style="display:none;"></canvas>
+        <canvas id="motionCanvas" style="display:none;"></canvas>
     </div>
     <div class="d-flex gap-2">
         <select id="classNameSelect" class="form-select w-auto">
@@ -30,8 +34,13 @@
   <div class="col-md-4">
     <div class="card-surface p-3">
         <h5><i class="bi bi-info-circle"></i> Status</h5>
-        <div id="status" class="alert alert-secondary">
-            Awaiting start...
+        <div id="status" class="alert alert-secondary">Awaiting start...</div>
+        <div id="locationStatus" class="small text-muted mb-2">
+            <i class="bi bi-geo-alt"></i> Location: Unknown
+        </div>
+        <div class="d-flex justify-content-between small text-muted mb-2">
+             <span>Motion Score:</span>
+             <span id="motionScore">0</span>
         </div>
         <h6>Last Marked:</h6>
         <div id="lastMarked">None yet.</div>
@@ -44,13 +53,23 @@
 <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
+    const motionCanvas = document.getElementById('motionCanvas');
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const statusDiv = document.getElementById('status');
+    const locationStatusDiv = document.getElementById('locationStatus');
     const lastMarkedDiv = document.getElementById('lastMarked');
     const classNameSelect = document.getElementById('classNameSelect');
+    const motionOverlay = document.getElementById('motionOverlay');
+    const motionScoreSpan = document.getElementById('motionScore');
 
     let recognitionInterval = null;
+    let currentLat = null;
+    let currentLon = null;
+    let prevFrameData = null;
+    
+    // Motion Threshold (Adjust sensitivity here)
+    const MOTION_THRESHOLD = 300000; // Pixel difference sum
 
     // Access webcam
     async function initWebcam() {
@@ -59,14 +78,79 @@
             video.srcObject = stream;
         } catch (err) {
             statusDiv.className = 'alert alert-danger';
-            statusDiv.textContent = 'Error: Could not access webcam. Please grant permission and refresh.';
-            console.error("Error accessing webcam: ", err);
+            statusDiv.textContent = 'Error: Could not access webcam.';
         }
+    }
+    
+    // Access Location
+    function startLocationTracking() {
+        if (!navigator.geolocation) {
+            locationStatusDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Geolocation not supported.';
+            return;
+        }
+        navigator.geolocation.watchPosition(
+            (position) => {
+                currentLat = position.coords.latitude;
+                currentLon = position.coords.longitude;
+                locationStatusDiv.innerHTML = `<i class="bi bi-geo-alt-fill text-success"></i> Lat: ${currentLat.toFixed(4)}, Lon: ${currentLon.toFixed(4)}`;
+            },
+            (error) => {
+                locationStatusDiv.innerHTML = `<i class="bi bi-exclamation-triangle text-danger"></i> Location denied.`;
+            },
+            { enableHighAccuracy: true }
+        );
+    }
+
+    function checkMotion() {
+        const w = 320; // Low res for motion check
+        const h = 240;
+        motionCanvas.width = w;
+        motionCanvas.height = h;
+        const ctx = motionCanvas.getContext('2d');
+        
+        ctx.drawImage(video, 0, 0, w, h);
+        const currentFrameData = ctx.getImageData(0, 0, w, h).data;
+
+        if (!prevFrameData) {
+            prevFrameData = currentFrameData;
+            return 0; // First frame
+        }
+
+        let score = 0;
+        // Simple pixel difference calculation
+        for (let i = 0; i < currentFrameData.length; i += 4) {
+            // Only check green channel for speed
+            score += Math.abs(currentFrameData[i+1] - prevFrameData[i+1]);
+        }
+
+        prevFrameData = currentFrameData;
+        return score;
     }
 
     async function recognizeFace() {
-        if (video.readyState < 2) return; // Wait for video to be ready
+        if (video.readyState < 2) return;
 
+        // 1. Check Location
+        if (currentLat === null || currentLon === null) {
+            statusDiv.className = 'alert alert-warning';
+            statusDiv.textContent = 'Waiting for location...';
+            return;
+        }
+
+        // 2. Check Motion (Liveness)
+        const motion = checkMotion();
+        motionScoreSpan.innerText = motion;
+
+        if (motion < MOTION_THRESHOLD) {
+            motionOverlay.style.display = 'block';
+            statusDiv.className = 'alert alert-warning';
+            statusDiv.textContent = 'Liveness Check: Please move slightly.';
+            return; // Skip recognition if no motion
+        } else {
+            motionOverlay.style.display = 'none';
+        }
+
+        // 3. Proceed to Recognition
         statusDiv.className = 'alert alert-info';
         statusDiv.textContent = 'Scanning...';
 
@@ -74,39 +158,42 @@
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
         const imageData = canvas.toDataURL('image/jpeg', 0.8);
-        const className = classNameSelect.value;
         
         try {
             const response = await fetch('/recognize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image_data: imageData, class_name: className })
+                body: JSON.stringify({
+                    image_data: imageData,
+                    class_name: classNameSelect.value,
+                    latitude: currentLat,
+                    longitude: currentLon
+                })
             });
             const result = await response.json();
 
             if (result.status === 'success') {
                 statusDiv.className = 'alert alert-success';
-                statusDiv.textContent = `Success! Marked ${result.name} present.`;
+                statusDiv.textContent = `Marked ${result.name} present.`;
                 lastMarkedDiv.innerHTML = `${result.name} (${result.roll}) <br>` + lastMarkedDiv.innerHTML;
             } else if (result.status === 'already_marked') {
                 statusDiv.className = 'alert alert-warning';
-                statusDiv.textContent = `${result.name} is already marked for today.`;
+                statusDiv.textContent = `${result.name} already marked.`;
+            } else if (result.status === 'error') {
+                 statusDiv.className = 'alert alert-danger';
+                 statusDiv.textContent = result.message;
             } else {
                 statusDiv.className = 'alert alert-secondary';
                 statusDiv.textContent = 'No recognized student found.';
             }
         } catch (error) {
-            console.error('Error during recognition:', error);
-            statusDiv.className = 'alert alert-danger';
-            statusDiv.textContent = 'Error connecting to server.';
+            console.error(error);
         }
     }
 
     startBtn.addEventListener('click', () => {
         if (!recognitionInterval) {
-            // Start recognition every 3 seconds (3000 milliseconds)
             recognitionInterval = setInterval(recognizeFace, 3000);
             startBtn.style.display = 'none';
             stopBtn.style.display = 'block';
@@ -122,10 +209,11 @@
             stopBtn.style.display = 'none';
             statusDiv.className = 'alert alert-secondary';
             statusDiv.textContent = 'Recognition stopped.';
+            motionOverlay.style.display = 'none';
         }
     });
 
-    // Initialize the webcam on page load
     initWebcam();
+    startLocationTracking();
 </script>
 {% endblock %}

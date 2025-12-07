@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Manual Attendance{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Manual Attendance</h2>
+  <div class="text-secondary">Mark a student as present if they were missed by the camera.</div>
+</div>
+
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card-surface p-4">
+      <form method="POST">
+        <div class="mb-4">
+          <label class="form-label fw-bold">Select Class</label>
+          <select name="class_name" class="form-select form-select-lg" required>
+            <option value="" disabled selected>Choose class...</option>
+            {% for c in classes %}
+              <option value="{{ c }}">{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        
+        <div class="mb-4">
+          <label class="form-label fw-bold">Select Student</label>
+          <select name="roll_number" class="form-select form-select-lg" required>
+            <option value="" disabled selected>Choose student...</option>
+            {% for s in students %}
+              <option value="{{ s['roll_number'] }}">{{ s['name'] }} ({{ s['roll_number'] }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        
+        <button type="submit" class="btn btn-success w-100 btn-lg">Mark Present</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

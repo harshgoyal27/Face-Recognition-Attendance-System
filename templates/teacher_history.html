@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Schedule & History{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Schedule & History</h2>
+  <div class="text-secondary">View your upcoming classes, past attendance, and special sessions.</div>
+</div>
+
+{% if current_user.role == 'admin' %}
+<div class="card-surface mb-4 p-4">
+    <form method="GET" class="row g-3 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label fw-bold">Branch</label>
+            <select name="branch" class="form-select">
+                <option value="">All Branches</option>
+                {% for b in all_branches %}
+                    <option value="{{ b }}" {% if b == selected_branch %}selected{% endif %}>{{ b }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label fw-bold">Year</label>
+            <select name="year" class="form-select">
+                <option value="">All Years</option>
+                {% for y in all_years %}
+                    <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <button class="btn btn-primary w-100">Filter</button>
+        </div>
+    </form>
+</div>
+{% endif %}
+
+<div class="row g-4 mb-4">
+    <div class="col-md-8">
+        <div class="card-surface p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="mb-0">Schedule & Attendance Log</h5>
+                <div class="small">
+                    <span class="badge bg-success me-1">● Conducted</span>
+                    <span class="badge bg-primary me-1">● Upcoming</span>
+                    <span class="badge bg-danger me-1">● Cancelled/Holiday</span>
+                    <span class="badge bg-warning text-dark">● Rescheduled</span>
+                </div>
+            </div>
+            <div id='calendar'></div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card-surface p-3 h-100">
+            <h5 class="mb-3">Quick Stats</h5>
+            <p class="text-muted mb-1">Total Past Sessions (Conducted)</p>
+            <h2>{{ past_sessions|length }}</h2>
+            <hr>
+            <div class="alert alert-info small">
+                <i class="bi bi-info-circle"></i>
+                <strong>Green:</strong> Attendance Marked<br>
+                <strong>Blue:</strong> Future Class<br>
+                <strong>Red:</strong> Mass Bunk / Holiday<br>
+                <strong>Yellow:</strong> Rescheduled
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card-surface">
+  <div class="p-3">
+    <h5>Recent Conducted Sessions</h5>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Class Name</th>
+          <th>Attendance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for session in past_sessions %}
+        <tr>
+          <td>{{ session['date'] }}</td>
+          <td>{{ session['class_name'] }}</td>
+          <td>
+            {% if session['present_count'] is string %}
+                <span class="badge bg-secondary rounded-pill px-3">{{ session['present_count'] }}</span>
+            {% else %}
+                <span class="badge bg-success rounded-pill px-3">{{ session['present_count'] }} Present</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="text-center text-muted py-4">No past conducted sessions found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal fade" id="eventModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalTitle">Class Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="modalContent"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js'></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    var calendarEl = document.getElementById('calendar');
+    var eventModal = new bootstrap.Modal(document.getElementById('eventModal'));
+    var modalTitle = document.getElementById('modalTitle');
+    var modalContent = document.getElementById('modalContent');
+
+    var calendar = new FullCalendar.Calendar(calendarEl, {
+      initialView: 'dayGridMonth',
+      headerToolbar: {
+        left: 'prev,next',
+        center: 'title',
+        right: 'today'
+      },
+      events: [
+        {% for evt in calendar_events %}
+        {
+          title: '{{ evt.title }}',
+          start: '{{ evt.start }}',
+          {% if evt.end %}end: '{{ evt.end }}',{% endif %}
+          color: '{{ evt.color }}',
+          textColor: '{{ evt.textColor }}',
+          display: 'block',
+          extendedProps: {{ evt.extendedProps | tojson }}
+        },
+        {% endfor %}
+      ],
+      height: 500,
+      eventClick: function(info) {
+          var props = info.event.extendedProps;
+          
+          if (props.type === 'future') {
+              // BLUE EVENTS (Timetable)
+              modalTitle.textContent = "Scheduled Class";
+              modalContent.innerHTML = `
+                  <p><strong>Subject:</strong> ${props.class_name}</p>
+                  <p><strong>Timing:</strong> ${props.time}</p>
+                  <p><strong>Branch:</strong> ${props.branch} - ${props.year}</p>
+                  <p><strong>Teacher(s):</strong> ${props.teacher}</p>
+                  <div class="alert alert-primary mt-3">This class is scheduled for the future.</div>
+              `;
+          }
+          else if (props.type === 'special') {
+              // RED/YELLOW EVENTS (Mass Bunk, Rescheduled, etc.)
+              modalTitle.textContent = "Session Status";
+              modalContent.innerHTML = `
+                  <h4 class="text-center mb-3">${props.status}</h4>
+                  <p><strong>Subject:</strong> ${props.class_name}</p>
+                  <p><strong>Date:</strong> ${props.date}</p>
+                  <div class="alert alert-secondary mt-3">
+                    This session has a special status marked by the teacher.
+                  </div>
+              `;
+          }
+          else {
+              // GREEN EVENTS (Past Attendance)
+              modalTitle.textContent = "Conducted Session";
+              var statusHtml = props.count;
+              if (typeof props.count === 'number') {
+                  statusHtml = `<span class="badge bg-success fs-6">${props.count} Present</span>`;
+              }
+              
+              modalContent.innerHTML = `
+                  <p><strong>Subject:</strong> ${props.class_name}</p>
+                  <p><strong>Date:</strong> ${props.date}</p>
+                  <p><strong>Attendance:</strong> ${statusHtml}</p>
+                  <div class="mt-3 text-end">
+                    <a href="/attendance/edit?class_name=${props.class_name}&date=${props.date}" class="btn btn-sm btn-outline-primary">View/Edit List</a>
+                  </div>
+              `;
+          }
+          eventModal.show();
+      }
+    });
+    calendar.render();
+  });
+</script>
+{% endblock %}

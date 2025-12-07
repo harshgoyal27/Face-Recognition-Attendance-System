@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Apply for Leave{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Apply for Leave</h2>
+  <div class="text-secondary">Submit a request for medical or casual leave.</div>
+</div>
+
+<div class="row g-4">
+  <div class="col-md-5">
+    <div class="card-surface p-4">
+      <form method="POST" enctype="multipart/form-data">
+        <div class="mb-3">
+          <label class="form-label">Reason Type</label>
+          <select name="reason_type" class="form-select" required>
+            <option value="Medical">Medical Leave</option>
+            <option value="Casual">Casual Leave</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        
+        <div class="row g-2 mb-3">
+            <div class="col-6">
+                <label class="form-label">Start Date</label>
+                <input type="date" name="start_date" class="form-control" required>
+            </div>
+            <div class="col-6">
+                <label class="form-label">End Date</label>
+                <input type="date" name="end_date" class="form-control" required>
+            </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Description / Reason</label>
+          <textarea name="description" class="form-control" rows="3" required></textarea>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Attach Document (Optional)</label>
+          <input type="file" name="document" class="form-control">
+          <div class="form-text">e.g. Medical Certificate (PDF, JPG)</div>
+        </div>
+
+        <button class="btn btn-brand w-100">Submit Request</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-md-7">
+    <div class="card-surface p-3 h-100">
+        <h5 class="mb-3">My Leave History</h5>
+        <div class="table-wrap">
+            <table class="table table-striped align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Dates</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for l in leaves %}
+                    <tr>
+                        <td>
+                            <strong>{{ l.reason_type }}</strong><br>
+                            <small class="text-muted">{{ l.description[:30] }}...</small>
+                        </td>
+                        <td>{{ l.start_date }} to {{ l.end_date }}</td>
+                        <td>
+                            {% if l.status == 'Approved' %}
+                                <span class="badge bg-success">Approved</span>
+                            {% elif l.status == 'Rejected' %}
+                                <span class="badge bg-danger">Rejected</span>
+                            {% else %}
+                                <span class="badge bg-warning text-dark">Pending</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="3" class="text-center text-muted py-4">No leave requests yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

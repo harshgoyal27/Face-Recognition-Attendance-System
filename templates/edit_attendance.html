@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Attendance{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Bulk Edit & Session Status</h2>
+  <div class="text-secondary">Mark class status (Regular, Mass Bunk, etc.) or modify individual attendance.</div>
+</div>
+
+<div class="card-surface p-4 mb-4">
+  <form method="GET" action="{{ url_for('edit_attendance_page') }}" class="row g-3 align-items-end">
+    <div class="col-md-4">
+      <label class="form-label fw-bold">Class</label>
+      <select name="class_name" class="form-select" required>
+        <option value="" disabled selected>Select Class...</option>
+        {% for c in classes %}
+        <option value="{{ c }}" {% if c == selected_class %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label fw-bold">Date</label>
+      <input type="date" name="date" class="form-control" value="{{ selected_date }}" required>
+    </div>
+    <div class="col-md-4">
+      <button type="submit" class="btn btn-primary w-100">Load Session</button>
+    </div>
+  </form>
+</div>
+
+{% if selected_class and selected_date %}
+<div class="card-surface">
+  <form method="POST" action="{{ url_for('save_attendance') }}">
+    <input type="hidden" name="class_name" value="{{ selected_class }}">
+    <input type="hidden" name="date" value="{{ selected_date }}">
+
+    <div class="p-3 border-bottom bg-light">
+        <label class="form-label fw-bold mb-2">Session Status:</label>
+        <div class="d-flex gap-3 align-items-center">
+            <select name="session_status" id="sessionStatus" class="form-select w-auto">
+                <option value="Regular" {% if current_status == 'Regular' %}selected{% endif %}>Regular Class</option>
+                <option value="Mass Bunk" {% if current_status == 'Mass Bunk' %}selected{% endif %}>Mass Bunk</option>
+                <option value="Teacher on Leave" {% if current_status == 'Teacher on Leave' %}selected{% endif %}>Teacher on Leave</option>
+                <option value="Gazette Holiday" {% if current_status == 'Gazette Holiday' %}selected{% endif %}>Gazette Holiday</option>
+                <option value="Class Rescheduled" {% if current_status == 'Class Rescheduled' %}selected{% endif %}>Class Rescheduled</option>
+            </select>
+            <span class="text-muted small" id="statusHelp">
+                "Regular" allows marking individual students. Other statuses apply to everyone.
+            </span>
+        </div>
+    </div>
+    
+    <div id="studentTableContainer">
+        <div class="p-3 border-bottom d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Student List</h5>
+            <span class="badge bg-info text-dark">{{ students|length }} Students</span>
+        </div>
+        
+        <div class="table-wrap">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+            <tr>
+                <th style="width: 50px;">
+                    <input type="checkbox" class="form-check-input" id="selectAll">
+                </th>
+                <th>Roll Number</th>
+                <th>Name</th>
+                <th>Branch</th>
+                <th>Status</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for s in students %}
+            {% set is_present = s['roll_number'] in present_rolls %}
+            <tr class="{% if is_present %}table-success{% endif %}">
+                <td>
+                <input type="checkbox" name="present_rolls" value="{{ s['roll_number'] }}"
+                        class="form-check-input student-checkbox"
+                        {% if is_present %}checked{% endif %}>
+                </td>
+                <td><span class="soft-badge">{{ s['roll_number'] }}</span></td>
+                <td>{{ s['name'] }}</td>
+                <td>{{ s['branch'] }}</td>
+                <td>
+                    {% if is_present %}
+                    <span class="badge bg-success">Present</span>
+                    {% else %}
+                    <span class="badge bg-secondary">Absent</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center py-4">No students found.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+    
+    <div class="p-3 bg-light border-top">
+      <button type="submit" class="btn btn-success float-end px-4">Save Changes</button>
+      <div class="clearfix"></div>
+    </div>
+  </form>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const selectAll = document.getElementById('selectAll');
+    if(selectAll) {
+        selectAll.addEventListener('change', function() {
+            const checkboxes = document.querySelectorAll('.student-checkbox');
+            checkboxes.forEach(cb => cb.checked = this.checked);
+        });
+    }
+
+    // Toggle table visibility based on status
+    const statusSelect = document.getElementById('sessionStatus');
+    const tableContainer = document.getElementById('studentTableContainer');
+    
+    function toggleTable() {
+        if (statusSelect.value === 'Regular') {
+            tableContainer.style.display = 'block';
+        } else {
+            tableContainer.style.display = 'none';
+        }
+    }
+
+    if(statusSelect) {
+        statusSelect.addEventListener('change', toggleTable);
+        toggleTable(); // Run on load
+    }
+</script>
+{% endblock %}

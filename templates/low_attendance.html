@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Low Attendance{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Low Attendance Report</h2>
+  <div class="text-secondary">Identify students with attendance below a specific percentage.</div>
+</div>
+
+<div class="card-surface p-4 mb-4">
+  <form method="GET" action="{{ url_for('low_attendance') }}" class="row g-3 align-items-end">
+    <div class="col-md-3">
+      <label class="form-label fw-bold">Class</label>
+      <select name="class_name" class="form-select" required>
+        <option value="" disabled selected>Select Class...</option>
+        {% for c in classes %}
+        <option value="{{ c }}" {% if c == selected_class %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label fw-bold">Threshold (%)</label>
+      <input type="number" name="threshold" class="form-control" value="{{ threshold }}" min="1" max="100">
+    </div>
+    <div class="col-md-3">
+      <button type="submit" class="btn btn-primary w-100">Filter</button>
+    </div>
+    <div class="col-md-3">
+      <a href="{{ url_for('download_low_attendance', class_name=selected_class, threshold=threshold) }}" class="btn btn-outline-success w-100">
+        <i class="bi bi-download"></i> Download CSV
+      </a>
+    </div>
+  </form>
+</div>
+
+{% if rows %}
+<div class="card-surface">
+  <div class="table-wrap">
+    <table class="table table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Roll Number</th>
+          <th>Name</th>
+          <th>Branch</th>
+          <th>Class</th>
+          <th>Attended / Total</th>
+          <th>Percentage</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><span class="soft-badge">{{ r.roll }}</span></td>
+          <td>{{ r.name }}</td>
+          <td>{{ r.branch }}</td>
+          <td>{{ r.class_name }}</td>
+          <td>{{ r.attended }} / {{ r.total }}</td>
+          <td>
+            <span class="badge bg-danger">{{ r.percent }}%</span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+{% if selected_class %}
+<div class="text-center text-muted py-5">
+  <i class="bi bi-check-circle display-4"></i>
+  <p class="mt-3">Good news! No students found below {{ threshold }}% attendance in {{ selected_class }}.</p>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

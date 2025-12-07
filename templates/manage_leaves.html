@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Leaves{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Manage Leave Requests</h2>
+  <div class="text-secondary">Approve or reject pending leave applications.</div>
+</div>
+
+<div class="card-surface">
+  <div class="table-wrap">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Student</th>
+          <th>Type</th>
+          <th>Duration</th>
+          <th>Description</th>
+          <th>Document</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in leaves %}
+        <tr>
+          <td>
+             <div class="fw-bold">{{ l.name }}</div>
+             <div class="small text-muted">{{ l.roll_number }} ({{ l.branch }} - {{ l.year }})</div>
+          </td>
+          <td><span class="badge bg-info text-dark">{{ l.reason_type }}</span></td>
+          <td>{{ l.start_date }} <br>to {{ l.end_date }}</td>
+          <td>{{ l.description }}</td>
+          <td>
+              {% if l.document_path %}
+                <a href="/{{ l.document_path }}" target="_blank" class="btn btn-sm btn-outline-secondary">View</a>
+              {% else %}
+                -
+              {% endif %}
+          </td>
+          <td>
+            {% if l.status == 'Pending' %}
+            <form method="POST" class="d-flex gap-2">
+                <input type="hidden" name="leave_id" value="{{ l.id }}">
+                {% if current_user.role == 'admin' %}
+                    <button name="action" value="approve" class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i></button>
+                    <button name="action" value="reject" class="btn btn-sm btn-danger"><i class="bi bi-x-lg"></i></button>
+                {% else %}
+                    <span class="text-muted small">Admin only</span>
+                {% endif %}
+            </form>
+            {% else %}
+                <span class="badge {{ 'bg-success' if l.status == 'Approved' else 'bg-danger' }}">{{ l.status }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-secondary py-5">No pending requests.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

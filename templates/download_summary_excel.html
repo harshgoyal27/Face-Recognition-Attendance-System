@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Attendance Report{% endblock %}
+
+{% block content %}
+<div class="page-header mb-4">
+  <h2 class="mb-1">Subject-wise Attendance Report</h2>
+  <div class="text-secondary">View detailed attendance stats and identify defaulters.</div>
+</div>
+
+<div class="card-surface p-4 mb-4">
+  <form method="GET" class="row g-3 align-items-end">
+    <div class="col-md-3">
+      <label class="form-label">From Date</label>
+      <input type="date" name="start" class="form-control" value="{{ start or '' }}">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">To Date</label>
+      <input type="date" name="end" class="form-control" value="{{ end or '' }}">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">Class</label>
+      <select name="class_filter" class="form-select">
+        <option value="">All Classes</option>
+        {% for c in classes %}
+        <option value="{{ c }}" {% if c == class_filter %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">Threshold (%)</label>
+      <input type="number" name="threshold" class="form-control" placeholder="e.g. 75" value="{{ threshold or '' }}" min="0" max="100">
+      <div class="form-text text-muted" style="font-size: 0.75rem;">Show &lt; this %</div>
+    </div>
+    <div class="col-md-2 d-flex gap-2">
+      <button class="btn btn-primary w-100">Filter</button>
+    </div>
+  </form>
+  
+  <div class="mt-3">
+      <a href="{{ url_for('download_summary_excel', start=start, end=end, class_filter=class_filter, threshold=threshold) }}" class="btn btn-outline-success">
+        <i class="bi bi-file-earmark-excel"></i> Download Report
+      </a>
+  </div>
+</div>
+
+<div class="card-surface">
+  <div class="table-wrap">
+      <table class="table table-striped align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Roll Number</th>
+          <th>Student Name</th>
+          <th>Branch</th>
+          <th>Class</th>
+          <th>Attended / Total</th>
+          <th>Percentage</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><span class="soft-badge">{{ r.roll }}</span></td>
+          <td>{{ r.name }}</td>
+          <td>{{ r.branch }}</td>
+          <td>{{ r.class_name }}</td>
+          <td>{{ r.attended }} / {{ r.total }}</td>
+          <td>
+            {% if r.percent < 75 %}
+              <span class="badge bg-danger">{{ r.percent }}%</span>
+            {% else %}
+              <span class="badge bg-success">{{ r.percent }}%</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-center text-secondary py-5">
+            {% if threshold %}
+                No students found below {{ threshold }}% attendance.
+            {% else %}
+                No attendance records found for the selected criteria.
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

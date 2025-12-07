@@ -9,6 +9,9 @@
     <div class="text-secondary">Manage roster, branches, and photos.</div>
   </div>
   <div class="d-flex gap-2">
+    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#bulkUploadModal">
+        <i class="bi bi-file-earmark-zip"></i> Bulk Upload
+    </button>
     <a href="{{ url_for('capture_student') }}" class="btn btn-outline-secondary">
       <i class="bi bi-camera"></i> Capture
     </a>
@@ -18,17 +21,43 @@
   </div>
 </div>
 
-<form method="get" action="{{ url_for('students_page') }}" class="mb-3">
-  <div class="input-group">
-    <input type="text" name="q" value="{{ q or '' }}" class="form-control" placeholder="Search by roll, name, or branch">
-    <button class="btn btn-outline-primary" type="submit">
-      <i class="bi bi-search"></i> Search
-    </button>
-    {% if q %}
-    <a class="btn btn-outline-danger" href="{{ url_for('students_page') }}">
-      <i class="bi bi-x-circle"></i> Clear
-    </a>
-    {% endif %}
+<form method="get" action="{{ url_for('students_page') }}" class="mb-4">
+  <div class="row g-2">
+    <div class="col-md-4">
+      <div class="input-group">
+        <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
+        <input type="text" name="q" value="{{ q or '' }}" class="form-control border-start-0" placeholder="Search name or roll number...">
+      </div>
+    </div>
+    
+    <div class="col-md-3">
+      <select name="branch" class="form-select">
+        <option value="">All Branches</option>
+        <option value="CSDA" {% if f_branch == 'CSDA' %}selected{% endif %}>CSDA</option>
+        <option value="CIOT" {% if f_branch == 'CIOT' %}selected{% endif %}>CIOT</option>
+        <option value="ECAM1" {% if f_branch == 'ECAM1' %}selected{% endif %}>ECAM1</option>
+        <option value="ECAM2" {% if f_branch == 'ECAM2' %}selected{% endif %}>ECAM2</option>
+      </select>
+    </div>
+
+    <div class="col-md-3">
+      <select name="year" class="form-select">
+        <option value="">All Years</option>
+        <option value="1st Year" {% if f_year == '1st Year' %}selected{% endif %}>1st Year</option>
+        <option value="2nd Year" {% if f_year == '2nd Year' %}selected{% endif %}>2nd Year</option>
+        <option value="3rd Year" {% if f_year == '3rd Year' %}selected{% endif %}>3rd Year</option>
+        <option value="4th Year" {% if f_year == '4th Year' %}selected{% endif %}>4th Year</option>
+      </select>
+    </div>
+
+    <div class="col-md-2 d-flex gap-2">
+      <button class="btn btn-primary flex-grow-1" type="submit">Filter</button>
+      {% if q or f_branch or f_year %}
+      <a href="{{ url_for('students_page') }}" class="btn btn-outline-danger" title="Clear Filters">
+        <i class="bi bi-x-lg"></i>
+      </a>
+      {% endif %}
+    </div>
   </div>
 </form>
 
@@ -40,6 +69,7 @@
           <th>Student</th>
           <th>Roll</th>
           <th>Branch</th>
+          <th>Year</th>
           <th style="width:180px;">Actions</th>
         </tr>
       </thead>
@@ -59,9 +89,12 @@
           </td>
           <td><span class="soft-badge">{{ row['roll_number'] }}</span></td>
           <td>{{ row['branch'] }}</td>
+          <td>{{ row['year'] }}</td>
           <td class="actions">
             <div class="d-flex gap-2">
-              <button class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#studentModal" data-mode="edit" data-roll="{{ row['roll_number'] }}" data-name="{{ row['name'] }}" data-branch="{{ row['branch'] }}" data-image="{{ row['image_path'] or '' }}">
+              <button class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#studentModal" data-mode="edit"
+                      data-roll="{{ row['roll_number'] }}" data-name="{{ row['name'] }}"
+                      data-branch="{{ row['branch'] }}" data-year="{{ row['year'] }}" data-image="{{ row['image_path'] or '' }}">
                 <i class="bi bi-pencil-square"></i> Edit
               </button>
               <form method="POST" action="{{ url_for('delete_student', roll_number=row['roll_number']) }}" onsubmit="return confirm('Delete {{ row['name'] }}?');">
@@ -72,7 +105,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="4" class="text-center text-secondary py-5">No students found.</td>
+          <td colspan="5" class="text-center text-secondary py-5">No students found.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -109,6 +142,15 @@
               </select>
             </div>
             <div class="col-md-6">
+              <label class="form-label">Year</label>
+              <select name="year" class="form-select" id="yearSelect" required>
+                  <option value="1st Year">1st Year</option>
+                  <option value="2nd Year">2nd Year</option>
+                  <option value="3rd Year">3rd Year</option>
+                  <option value="4th Year">4th Year</option>
+              </select>
+            </div>
+            <div class="col-md-12">
               <label class="form-label">Photo (optional)</label>
               <label class="w-100 p-3 border rounded text-center" for="studentImage" style="cursor: pointer;">
                   <img id="imgPreview" src="" alt="Image Preview" style="display:none; width:120px; height:120px; object-fit:cover; border-radius:12px; margin: 0 auto .5rem;">
@@ -127,11 +169,57 @@
     </div>
   </div>
 </div>
+
+<div class="modal fade" id="bulkUploadModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form method="POST" action="{{ url_for('upload_students_zip') }}" enctype="multipart/form-data">
+        <div class="modal-header">
+          <h5 class="modal-title">Bulk Upload Students</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Select ZIP File</label>
+            <input type="file" name="zip_file" class="form-control" accept=".zip" required>
+            <div class="form-text">
+                Images inside must be named: <code>ROLLNUMBER_NAME.jpg</code><br>
+                Example: <code>2022UCI8036_Harsh.jpg</code>
+            </div>
+          </div>
+          <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label">Default Branch</label>
+                <select name="default_branch" class="form-select">
+                    <option value="CSDA">CSDA</option>
+                    <option value="CIOT">CIOT</option>
+                    <option value="ECAM1">ECAM1</option>
+                    <option value="ECAM2">ECAM2</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Default Year</label>
+                <select name="default_year" class="form-select">
+                    <option value="1st Year">1st Year</option>
+                    <option value="2nd Year">2nd Year</option>
+                    <option value="3rd Year">3rd Year</option>
+                    <option value="4th Year">4th Year</option>
+                </select>
+              </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Upload & Process</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  // Image picker & preview
   (function(){
     const input = document.getElementById('studentImage');
     const preview = document.getElementById('imgPreview');
@@ -144,7 +232,6 @@
     });
   })();
 
-  // Reusable modal: Add vs Edit
   (function(){
     const modal = document.getElementById('studentModal');
     const title = document.getElementById('modalTitle');
@@ -152,6 +239,7 @@
     const rollInput = document.getElementById('rollInput');
     const nameInput = document.getElementById('nameInput');
     const branchSelect = document.getElementById('branchSelect');
+    const yearSelect = document.getElementById('yearSelect');
     const imgInput = document.getElementById('studentImage');
     const imgPreview = document.getElementById('imgPreview');
 
@@ -161,6 +249,7 @@
       rollInput.value = '';
       nameInput.value = '';
       branchSelect.value = 'CSDA';
+      yearSelect.value = '1st Year';
       rollInput.readOnly = false;
       imgInput.value = '';
       imgPreview.style.display = 'none';
@@ -176,6 +265,7 @@
       rollInput.value = trigger.getAttribute('data-roll') || '';
       nameInput.value = trigger.getAttribute('data-name') || '';
       branchSelect.value = trigger.getAttribute('data-branch') || 'CSDA';
+      yearSelect.value = trigger.getAttribute('data-year') || '1st Year';
       rollInput.readOnly = true;
       imgInput.value = '';
       const image = trigger.getAttribute('data-image') || '';

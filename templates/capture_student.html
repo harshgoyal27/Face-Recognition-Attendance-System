@@ -14,21 +14,30 @@
     <h3>Capture Student</h3>
     <form method="POST">
       <div class="row g-3">
-        <div class="col-md-4">
+        <div class="col-md-3">
           <label class="form-label">Roll Number</label>
           <input type="text" name="roll" class="form-control" required>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
           <label class="form-label">Name</label>
           <input type="text" name="name" class="form-control" required>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
           <label class="form-label">Branch</label>
           <select name="branch" class="form-select" required>
             <option value="CSDA">CSDA</option>
             <option value="CIOT">CIOT</option>
             <option value="ECAM1">ECAM1</option>
             <option value="ECAM2">ECAM2</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Year</label>
+          <select name="year" class="form-select" required>
+            <option value="1st Year">1st Year</option>
+            <option value="2nd Year">2nd Year</option>
+            <option value="3rd Year">3rd Year</option>
+            <option value="4th Year">4th Year</option>
           </select>
         </div>
       </div>

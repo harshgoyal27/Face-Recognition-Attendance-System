@@ -8,33 +8,71 @@
   <div class="text-secondary">Grant teachers access to specific classes for attendance.</div>
 </div>
 
-<div class="card-surface">
+<div class="card-surface mb-4">
   <div class="p-3">
     <h5>New Assignment</h5>
     <form method="post" class="row g-3 align-items-end">
       <input type="hidden" name="assign">
-      <div class="col-md-5">
+      
+      <div class="col-md-3">
         <label for="teacher_id" class="form-label">Teacher</label>
         <select name="teacher_id" id="teacher_id" class="form-select" required>
+          <option value="" disabled selected>Select Teacher</option>
           {% for t in teachers %}
           <option value="{{ t['id'] }}">{{ t['username'] }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="col-md-5">
-        <label for="class_name" class="form-label">Class</label>
+
+      <div class="col-md-2">
+        <label for="filterYear" class="form-label">Year</label>
+        <select id="filterYear" class="form-select">
+          <option value="">All Years</option>
+          <option value="1st Year">1st Year</option>
+          <option value="2nd Year">2nd Year</option>
+          <option value="3rd Year">3rd Year</option>
+          <option value="4th Year">4th Year</option>
+        </select>
+      </div>
+
+      <div class="col-md-2">
+        <label for="filterBranch" class="form-label">Branch</label>
+        <select id="filterBranch" class="form-select">
+          <option value="">All Branches</option>
+          <option value="CSDA">CSDA</option>
+          <option value="CIOT">CIOT</option>
+          <option value="ECAM1">ECAM1</option>
+          <option value="ECAM2">ECAM2</option>
+        </select>
+      </div>
+
+      <div class="col-md-3">
+        <label for="class_name" class="form-label">Subject</label>
         <select name="class_name" id="class_name" class="form-select" required>
+          <option value="" disabled selected>Select Subject</option>
           {% for c in classes %}
-          <option value="{{ c['class_name'] }}">{{ c['class_name'] }}</option>
+          <option value="{{ c['class_name'] }}"
+                  data-year="{{ c['year'] }}"
+                  data-branch="{{ c['branch'] }}"
+                  data-base-name="{{ c['class_name'] }}">
+            {{ c['class_name'] }}
+            {% if c['branch'] or c['year'] %}
+              ({{ c['branch'] or 'N/A' }} - {{ c['year'] or 'N/A' }})
+            {% endif %}
+          </option>
           {% endfor %}
         </select>
       </div>
+
       <div class="col-md-2">
         <button type="submit" class="btn btn-brand w-100">Assign</button>
       </div>
     </form>
   </div>
+</div>
 
+<div class="card-surface">
+  <div class="p-3"><h5>Current Assignments</h5></div>
   <div class="table-wrap">
     <table class="table table-striped align-middle mb-0">
       <thead>
@@ -66,4 +104,52 @@
     </table>
   </div>
 </div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const filterYear = document.getElementById('filterYear');
+    const filterBranch = document.getElementById('filterBranch');
+    const classSelect = document.getElementById('class_name');
+    const allOptions = Array.from(classSelect.querySelectorAll('option:not([disabled])'));
+
+    function filterClasses() {
+        const year = filterYear.value;
+        const branch = filterBranch.value;
+
+        // Reset selection
+        classSelect.value = "";
+
+        allOptions.forEach(opt => {
+            const optYear = opt.getAttribute('data-year');
+            const optBranch = opt.getAttribute('data-branch');
+            const baseName = opt.getAttribute('data-base-name');
+
+            // Logic: Show option if it matches filter OR if filter is empty
+            const matchYear = !year || optYear === year;
+            const matchBranch = !branch || optBranch === branch;
+
+            if (matchYear && matchBranch) {
+                opt.style.display = '';
+                
+                // If both filters are specific, show ONLY the subject name
+                if (year && branch) {
+                    opt.textContent = baseName;
+                } else {
+                    // Otherwise show the full details so they know which branch/year it belongs to
+                    let details = [];
+                    if (optBranch) details.push(optBranch);
+                    if (optYear) details.push(optYear);
+                    opt.textContent = details.length > 0 ? `${baseName} (${details.join(' - ')})` : baseName;
+                }
+            } else {
+                opt.style.display = 'none';
+            }
+        });
+    }
+
+    filterYear.addEventListener('change', filterClasses);
+    filterBranch.addEventListener('change', filterClasses);
+</script>
 {% endblock %}

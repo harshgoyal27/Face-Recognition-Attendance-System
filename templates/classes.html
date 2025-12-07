@@ -11,9 +11,31 @@
 <div class="card-surface">
   <div class="p-3">
     <h5>Add New Class</h5>
-    <form method="POST" class="d-flex gap-2">
-      <input type="text" name="class_name" class="form-control" placeholder="Enter class or subject name" required>
-      <button class="btn btn-brand">Add Class</button>
+    <form method="POST" class="row g-2 align-items-center">
+      <div class="col-md-4">
+        <input type="text" name="class_name" class="form-control" placeholder="Subject Name" required>
+      </div>
+      <div class="col-md-3">
+        <select name="branch" class="form-select" required>
+          <option value="" disabled selected>Select Branch</option>
+          <option value="CSDA">CSDA</option>
+          <option value="CIOT">CIOT</option>
+          <option value="ECAM1">ECAM1</option>
+          <option value="ECAM2">ECAM2</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <select name="year" class="form-select" required>
+          <option value="" disabled selected>Select Year</option>
+          <option value="1st Year">1st Year</option>
+          <option value="2nd Year">2nd Year</option>
+          <option value="3rd Year">3rd Year</option>
+          <option value="4th Year">4th Year</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-brand w-100">Add Class</button>
+      </div>
     </form>
   </div>
 
@@ -22,26 +44,186 @@
       <thead>
         <tr>
           <th>Class Name</th>
-          <th style="width: 120px;">Action</th>
+          <th>Branch</th>
+          <th>Year</th>
+          <th style="width: 240px;">Action</th>
         </tr>
       </thead>
       <tbody>
         {% for c in classes %}
         <tr>
           <td>{{ c['class_name'] }}</td>
+          <td>{{ c['branch'] or 'N/A' }}</td>
+          <td>{{ c['year'] or 'N/A' }}</td>
           <td>
-            <form method="POST" action="{{ url_for('delete_class', cid=c['id']) }}" onsubmit="return confirm('Delete this class?');">
-              <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Delete</button>
-            </form>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-success btn-sm"
+                        data-bs-toggle="modal"
+                        data-bs-target="#scheduleModal"
+                        data-id="{{ c['id'] }}"
+                        data-name="{{ c['class_name'] }}">
+                    <i class="bi bi-calendar-plus"></i> Schedule
+                </button>
+
+                <button class="btn btn-outline-info btn-sm"
+                        data-bs-toggle="modal"
+                        data-bs-target="#editClassModal"
+                        data-id="{{ c['id'] }}"
+                        data-name="{{ c['class_name'] }}"
+                        data-branch="{{ c['branch'] }}"
+                        data-year="{{ c['year'] }}">
+                    <i class="bi bi-pencil"></i>
+                </button>
+
+                <form method="POST" action="{{ url_for('delete_class', cid=c['id']) }}" onsubmit="return confirm('Delete this class?');">
+                    <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
+                </form>
+            </div>
           </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="2" class="text-center text-secondary py-5">No classes have been added yet.</td>
+          <td colspan="4" class="text-center text-secondary py-5">No classes have been added yet.</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+
+<div class="modal fade" id="scheduleModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="scheduleTitle">Manage Schedule</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form method="POST" action="{{ url_for('add_timetable') }}" class="mb-4">
+          <input type="hidden" name="class_id" id="scheduleClassId">
+          <div class="row g-2">
+            <div class="col-md-4">
+              <select name="day" class="form-select" required>
+                <option value="Monday">Mon</option>
+                <option value="Tuesday">Tue</option>
+                <option value="Wednesday">Wed</option>
+                <option value="Thursday">Thu</option>
+                <option value="Friday">Fri</option>
+                <option value="Saturday">Sat</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <input type="time" name="start" class="form-control" required>
+            </div>
+            <div class="col-md-4">
+              <input type="time" name="end" class="form-control" required>
+            </div>
+            <div class="col-12">
+                <button class="btn btn-success w-100">Add Slot</button>
+            </div>
+          </div>
+        </form>
+        
+        <h6>Current Slots</h6>
+        <ul class="list-group" id="slotList">
+            <li class="list-group-item text-muted small">Refresh page after adding to see slots.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="editClassModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form method="POST" action="{{ url_for('edit_class') }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit Class</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="class_id" id="editClassId">
+          <div class="mb-3">
+            <label class="form-label">Subject Name</label>
+            <input type="text" name="class_name" id="editClassName" class="form-control" required>
+          </div>
+          <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label">Branch</label>
+                <select name="branch" id="editClassBranch" class="form-select" required>
+                  <option value="CSDA">CSDA</option>
+                  <option value="CIOT">CIOT</option>
+                  <option value="ECAM1">ECAM1</option>
+                  <option value="ECAM2">ECAM2</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Year</label>
+                <select name="year" id="editClassYear" class="form-select" required>
+                  <option value="1st Year">1st Year</option>
+                  <option value="2nd Year">2nd Year</option>
+                  <option value="3rd Year">3rd Year</option>
+                  <option value="4th Year">4th Year</option>
+                </select>
+              </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Populate Edit Modal
+    const editClassModal = document.getElementById('editClassModal');
+    if (editClassModal) {
+        editClassModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            document.getElementById('editClassId').value = button.getAttribute('data-id');
+            document.getElementById('editClassName').value = button.getAttribute('data-name');
+            document.getElementById('editClassBranch').value = button.getAttribute('data-branch');
+            document.getElementById('editClassYear').value = button.getAttribute('data-year');
+        });
+    }
+
+    // Populate Schedule Modal
+    const scheduleModal = document.getElementById('scheduleModal');
+    if (scheduleModal) {
+        scheduleModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            const id = button.getAttribute('data-id');
+            const name = button.getAttribute('data-name');
+            document.getElementById('scheduleClassId').value = id;
+            document.getElementById('scheduleTitle').textContent = "Manage Schedule: " + name;
+            
+            // To show slots dynamically without AJAX, we pass the timetable dict from Flask
+            // This is a simple hack. For prod, use AJAX.
+            const timetable = {{ timetable|tojson }};
+            const list = document.getElementById('slotList');
+            list.innerHTML = '';
+            
+            if (timetable[id]) {
+                timetable[id].forEach(slot => {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    li.innerHTML = `
+                        <span>${slot.day_of_week}: ${slot.start_time} - ${slot.end_time}</span>
+                        <form method="POST" action="/timetable/delete/${slot.id}" style="display:inline;">
+                           <button class="btn btn-sm btn-outline-danger py-0 px-2">&times;</button>
+                        </form>
+                    `;
+                    list.appendChild(li);
+                });
+            } else {
+                list.innerHTML = '<li class="list-group-item text-muted">No slots defined.</li>';
+            }
+        });
+    }
+</script>
 {% endblock %}
